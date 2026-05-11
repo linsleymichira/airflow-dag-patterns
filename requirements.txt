@@ -1,1 +1,7 @@
 # Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
+# Runtime 3.2-4 already ships apache-airflow-providers-standard and apache-airflow-providers-common-sql;
+# do not pin them here or you risk a downgrade.
+
+dbt-core>=1.7,<1.10
+dbt-duckdb>=1.7,<1.10
+# duckdb is pulled transitively by dbt-duckdb at a compatible version.

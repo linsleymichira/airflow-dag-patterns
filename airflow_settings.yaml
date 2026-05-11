@@ -6,20 +6,8 @@
 # For issues create an issue ticket here: https://github.com/astronomer/astro-cli/issues
 
 airflow:
-  connections:
-    - conn_id:
-      conn_type:
-      conn_host:
-      conn_schema:
-      conn_login:
-      conn_password:
-      conn_port:
-      conn_extra:
-        example_extra_field: example-value
-  pools:
-    - pool_name:
-      pool_slot:
-      pool_description:
+  connections: []
+  pools: []
   variables:
-    - variable_name:
-      variable_value:
+    - variable_name: socrata_app_token
+      variable_value: ${SOCRATA_APP_TOKEN}

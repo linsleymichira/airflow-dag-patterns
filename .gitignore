@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# airflow-dag-patterns specifics
+*.duckdb
+*.duckdb.wal
+include/*.csv
+include/*.json
+dbt_project/target/
+dbt_project/dbt_packages/
+dbt_project/logs/
+logs/
+airflow_db/
+.astro/test_dag_integrity_default.py.bak

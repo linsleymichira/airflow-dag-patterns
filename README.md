@@ -1,6 +1,6 @@
 ## airflow-dag-patterns
 
-A minimal, runnable Airflow 2.10 reference DAG demonstrating **five production orchestration patterns** on a live public API. Built with **Astro Runtime + dbt-core + DuckDB** so the whole pipeline runs end-to-end on a single `astro dev start`, no cloud accounts, no credentials, no waiting.
+A minimal, runnable Airflow 3 reference DAG demonstrating **five production orchestration patterns** on a live public API. Built with **Astro Runtime + dbt-core + DuckDB** so the whole pipeline runs end-to-end on a single `astro dev start`, no cloud accounts, no credentials, no waiting.
 
 > **Why this repo exists:** Airflow tutorials show you how to write a DAG. Production Airflow shows you how to write one that survives an on-call rotation. This repo includes idempotent tasks, freshness-aware sensors, data-aware downstream triggering, structured alerting, and a real dbt handoff, all in one DAG you can run on a laptop in five minutes.
 
@@ -10,7 +10,7 @@ A minimal, runnable Airflow 2.10 reference DAG demonstrating **five production o
 
 1. **Idempotent task design** Every task is bound to `data_interval_start` / `data_interval_end`, so reruns and backfills produce the same output rows: partition-overwrite-safe loads, no duplicates, no surprises on a clear-and-rerun.
 2. **Freshness-aware scheduling** A `PythonSensor` in `reschedule` mode polls the Socrata API's `:updated_at` field before any extract runs, so the DAG never burns a worker slot waiting on stale upstream data. Reschedule mode releases the slot between polls, the way you'd actually run this in production.
-3. **Data-aware downstream (Airflow Datasets, 2.4+)**  the load task emits a `Dataset("raw_311")` event. The DBT DAG is scheduled on the dataset, not on a cron. The dbt run fires the moment new data lands, not three minutes later, because the cron happened to align.
+3. **Data-aware downstream (Airflow 3 Assets)**  the load task emits an `Asset("raw_311")` event. The dbt DAG is scheduled on the asset, not on a cron. The dbt run fires the moment new data lands, not three minutes later, because the cron happened to align.
 4. **Structured `on_failure_callback` alerting**  every task wires a single callback that emits a JSON-shaped log line with run context (`dag_id`, `task_id`, `data_interval`, `try_number`, exception type, exception message). The exact shape an alerting backend (Slack, PagerDuty, OpsGenie) consumes without further parsing drops into a webhook, and you're paging.
 5. **TaskFlow API** The DAG is written in the modern decorator style (`@dag`, `@task`), with explicit XCom passing via return values rather than `xcom_push` / `xcom_pull` string lookups. Type-friendly, lint-friendly, and the style every Airflow doc has used since 2.0.
 
@@ -29,19 +29,19 @@ NYC 311 Socrata API
   extract_311 (TaskFlow)         ← bounded by data_interval_start / _end
         │                          (idempotent: same interval → same rows)
         ▼
-  load_to_duckdb                 ← MERGE on (unique_key, created_date)
+  load_to_duckdb                 ← INSERT OR REPLACE on unique_key
         │                          (partition-overwrite-safe upsert)
         ▼
-  emits Dataset("raw_311") ─────┐
-                                │  (Airflow 2.4+ data-aware scheduling)
+  emits Asset("raw_311") ───────┐
+                                │  (Airflow 3 data-aware scheduling)
                                 ▼
-                          dbt_run DAG     ← schedule=[Dataset("raw_311")]
+                          dbt_run DAG     ← schedule=[Asset("raw_311")]
                                 │           runs `dbt build --select state:modified+`
                                 ▼
-                          emits Dataset("mart_complaints_daily")
+                          emits Asset("mart_complaints_daily")
 ```
 
-Full diagram with task names, retry/SLA settings, and Dataset URIs: [`docs/architecture.png`](docs/architecture.png).
+Full diagram with task names, retry/SLA settings, and Asset URIs: [`docs/architecture.png`](docs/architecture.png).
 
 Every task wires `on_failure_callback=alert_callback` from `include/callbacks.py`.
 
@@ -49,7 +49,7 @@ Every task wires `on_failure_callback=alert_callback` from `include/callbacks.py
 
 ### Stack
 
-- **Orchestrator:** Apache Airflow 2.10+ on [Astro Runtime](https://docs.astronomer.io/astro/runtime-release-notes) (free, open-source, recruiters recognize the `Dockerfile` + `astro dev` shape)
+- **Orchestrator:** Apache Airflow 3 on [Astro Runtime 3.2+](https://docs.astronomer.io/astro/runtime-release-notes) (free, open-source, recruiters recognize the `Dockerfile` + `astro dev` shape)
 - **Local execution:** [Astro CLI](https://docs.astronomer.io/astro/cli/install-cli)  `astro dev start` spins up Airflow + Postgres metadata DB in Docker, no manual `airflow db init`
 - **Source data:** [NYC 311 Service Requests](https://data.cityofnewyork.us/Social-Services/311-Service-Requests-from-2010-to-Present/erm2-nwe9) via the Socrata Open Data API. Free, ~38M+ rows, daily-fresh, optional app token (raises rate limit but not required)
 - **Local warehouse target:** [DuckDB](https://duckdb.org/)  in-process, file-backed under `include/nyc_311.duckdb`. Same engine MotherDuck runs in production
@@ -67,13 +67,13 @@ Every task wires `on_failure_callback=alert_callback` from `include/callbacks.py
 |---|---|---|
 | `freshness_sensor` | `PythonSensor` (reschedule mode) | Polls `https://data.cityofnewyork.us/resource/erm2-nwe9.json?$select=max(:updated_at)` and succeeds when the max `:updated_at` is newer than `data_interval_start`. Releases the worker slot between polls. |
 | `extract_311` | `@task` (TaskFlow) | Pulls records where `:updated_at` falls in `[data_interval_start, data_interval_end)` via `$where=` Socrata clause. Returns a list of dicts via XCom (small payload  paginates internally to avoid the 1000-row default cap). |
-| `load_to_duckdb` | `@task` | `MERGE` into `raw_311.complaints` on `(unique_key, created_date)`. Partition-overwrite-safe: same interval reruns produce the same rows. Outlets `Dataset("raw_311")`. |
+| `load_to_duckdb` | `@task` | `INSERT OR REPLACE` into `raw_311.complaints` keyed on `unique_key`. Partition-overwrite-safe: same interval reruns produce the same rows. Outlets `Asset("raw_311")`. |
 
 #### `dags/nyc_311_dbt.py`  the transform DAG
 
 | Task | Type | Purpose |
 |---|---|---|
-| `dbt_build` | `BashOperator` | Runs `dbt build --select state:modified+ --profiles-dir /usr/local/airflow/dbt_project` from the embedded dbt project. Schedule: `[Dataset("raw_311")]`  no cron, fires on data event. Outlets `Dataset("mart_complaints_daily")`. |
+| `dbt_build` | `BashOperator` | Runs `dbt build --select state:modified+ --profiles-dir /usr/local/airflow/dbt_project` from the embedded dbt project. Schedule: `[Asset("raw_311")]`  no cron, fires on data event. Outlets `Asset("mart_complaints_daily")`. |
 
 #### `include/callbacks.py`  shared alert callback
 
@@ -160,9 +160,9 @@ The whole repo is reproducible at zero cost on personal accounts:
 ### What's interesting (the stuff hiring managers ask about)
 
 1. **Why reschedule-mode sensors over poke-mode?**  Poke-mode sensors hold a worker slot for the entire timeout, even if the slot is waiting on an external check. Reschedule mode releases the slot between checks, so a sensor that polls every 5 minutes for 6 hours occupies a worker for ~1 second instead of 6 hours straight. On a fixed pool, the difference between "DAGs queue forever" and "DAGs run on time."
-2. **What does "idempotent" mean for an Airflow task, and how doThe subsequentntee it?**  The same task instance, given the same inputs (`data_interval_start`, `data_interval_end`), produces the same outputs no matter how many times it runs. This DAG guarantees it by (a) bounding the API query by `:updated_at` between the interval bounds, not "since now," and (b) using `MERGE` on the natural key + date, not `INSERT`.
-3. **Why Datasets over `TriggerDagRunOperator` / `ExternalTaskSensor`?**  `TriggerDagRunOperator` is a one-way push: the upstream DAG decides when downstream runs, regardless of whether the downstream is healthy. `ExternalTaskSensor` is a polling pattern: the downstream waits for the upstream's task instance and breaks subtly when intervals don't align. `Dataset` is event-driven: upstream emits, downstream subscribes, scheduling is decoupled. Multiple downstream DAGs can subscribe to the same Dataset; older patterns enforce one-to-one wiring.
-4. **How do you parameterize backfills without breaking idempotency?**  `airflow dags backfill` walks `data_interval_start` / `_end` across the requested range. Because every task in this DAG reads only those two parameters and writes via `MERGE`, a backfill produces the same output as the original runs. No "since when" timestamps anywhere in the code. `[Confirm tested via airflow dags backfill in setup checklist]`
+2. **What does "idempotent" mean for an Airflow task, and how doThe subsequentntee it?**  The same task instance, given the same inputs (`data_interval_start`, `data_interval_end`), produces the same outputs no matter how many times it runs. This DAG guarantees it by (a) bounding the API query by `:updated_at` between the interval bounds, not "since now," and (b) upserting on the natural key (`unique_key`) via `INSERT OR REPLACE`, not a plain `INSERT`.
+3. **Why Assets over `TriggerDagRunOperator` / `ExternalTaskSensor`?**  `TriggerDagRunOperator` is a one-way push: the upstream DAG decides when downstream runs, regardless of whether the downstream is healthy. `ExternalTaskSensor` is a polling pattern: the downstream waits for the upstream's task instance and breaks subtly when intervals don't align. `Asset` is event-driven: upstream emits, downstream subscribes, scheduling is decoupled. Multiple downstream DAGs can subscribe to the same Asset; older patterns enforce one-to-one wiring.
+4. **How do you parameterize backfills without breaking idempotency?**  `airflow dags backfill` walks `data_interval_start` / `_end` across the requested range. Because every task in this DAG reads only those two parameters and writes via `INSERT OR REPLACE` on the natural key, a backfill produces the same output as the original runs. No "since when" timestamps anywhere in the code. `[Confirm tested via airflow dags backfill in setup checklist]`
 5. **Why TaskFlow API instead of `PythonOperator` + `op_kwargs`?**  TaskFlow makes XCom passing implicit (return value → next task argument), which catches type errors at parse time instead of at runtime. `PythonOperator` passes context as a dict, which the type checker can't help you with. Same DAG in TaskFlow style is ~30% fewer lines and reads like Python rather than a config file.
 6. **How do you keep secrets out of the DAG code?**  Socrata app token comes from `.env` → Airflow Variable / Connection at startup, never hardcoded. In production, swap the env-var loader for a [Secrets Backend](https://airflow.apache.org/docs/apache-airflow/stable/security/secrets/secrets-backend/index.html) (AWS SSM, GCP Secret Manager, Vault). The DAG code reads `Variable.get("socrata_app_token")`; either way,  the backend is configuration, not code.
 7. **When would you use dynamic task mapping vs. a TaskGroup?**  TaskGroup is for *visual* grouping of tasks you know at parse time (e.g., one staging task per source system, listed statically). Dynamic task mapping (`@task.expand()`) is for *data-driven* fan-out where the count is only known at runtime (e.g., one task per partition discovered by a listing operator). This DAG uses neither a single-source pipeline nor the [Roadmap](#roadmap) lists a dynamic-mapping fan-out across complaint types as a v2 demo.
@@ -178,8 +178,7 @@ The whole repo is reproducible at zero cost on personal accounts:
 - [ ] **Sensor pool + concurrency control**  demonstrate how `pool` slots prevent sensor storms on a many-DAG instance
 - [ ] **Multi-source merge**  add a second source (e.g., NYC Open Data weather) and join in a downstream dbt mart, to put the multi-source orchestration story on display
 - [ ] **Alert dedup**  backend for the `on_failure_callback` to suppress duplicate alerts within a configurable window
-- [ ] **Airflow 3.x patterns**  when stable, demonstrate the new task SDK + dag-level retries
-- [ ] **Great Expectations / dbt-expectations validation step**  separate task between load and dbt that fails the DAG (and the Dataset emit) on a contract violation
+- [ ] **Great Expectations / dbt-expectations validation step**  separate task between load and dbt that fails the DAG (and the Asset emit) on a contract violation
 - [ ] **CI: `dbt build` on PR against an ephemeral DuckDB**  The test target is already DuckDB, so that CI can run the entire pipeline on every PR
 
 ---

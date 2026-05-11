@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: raw_311
+    database: nyc_311
+    schema: raw_311
+    description: Raw NYC 311 service requests landed by the Airflow ingest DAG.
+    tables:
+      - name: complaints
+        description: One row per 311 service request (natural key = unique_key).
+        columns:
+          - name: unique_key
+            tests: [not_null, unique]
+          - name: created_date
+            tests: [not_null]

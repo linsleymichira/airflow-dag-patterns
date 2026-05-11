@@ -1,0 +1,12 @@
+version: 2
+
+models:
+  - name: stg_311_complaints
+    description: 1:1 mirror of raw_311.complaints with snake_case + type casts.
+    columns:
+      - name: unique_key
+        tests: [not_null, unique]
+      - name: complaint_date
+        tests: [not_null]
+      - name: complaint_type
+        tests: [not_null]

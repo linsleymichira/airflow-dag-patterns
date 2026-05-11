@@ -1,0 +1,9 @@
+# dbt profile. No secrets here (the warehouse target is a local file path), so this is
+# committed rather than gitignored. The DAG passes --profiles-dir pointing at this directory.
+nyc_311:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('AIRFLOW_HOME', '/usr/local/airflow') }}/include/nyc_311.duckdb"
+      threads: 4

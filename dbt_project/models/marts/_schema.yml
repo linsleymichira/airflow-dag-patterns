@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: mart_complaints_daily
+    description: One row per complaint_date × borough × complaint_type with daily aggregates.
+    columns:
+      - name: complaint_date
+        tests: [not_null]
+      - name: complaint_count
+        tests: [not_null]
