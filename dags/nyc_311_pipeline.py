@@ -1,11 +1,15 @@
 """NYC 311 ingest pipeline: freshness sensor → extract → idempotent load → Asset emit.
 
-Demonstrates four of the five repo patterns:
-  1. Idempotent task design (bounded by data_interval_start/_end, MERGE on natural key)
+The hand-written reference DAG. Demonstrates five of the six repo patterns:
+
+  1. Idempotent task design (bounded by data_interval_start/_end, INSERT OR REPLACE on unique_key)
   2. Freshness-aware scheduling (PythonSensor in reschedule mode)
   3. Data-aware downstream via Asset outlet
   4. Structured on_failure_callback alerting
   5. TaskFlow API for the whole graph
+
+The sixth pattern (config-driven DAG factory) lives in dags/factories/source_factory.py;
+this DAG stays hand-written so a reviewer has one readable reference to anchor the patterns.
 
 Source: NYC 311 Service Requests via the Socrata Open Data API
         https://data.cityofnewyork.us/resource/erm2-nwe9.json

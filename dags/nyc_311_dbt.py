@@ -29,7 +29,9 @@ MART_ASSET = Asset("mart_complaints_daily")
 @dag(
     dag_id="nyc_311_dbt",
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
-    schedule=[RAW_311_ASSET, RAW_TAXI_ASSET, RAW_NOISE_ASSET],
+    # `[a, b, c]` is AND in Airflow 3 (DAG waits for *all* to update since last run).
+    # We want OR semantics — fire whenever any source lands — so use the | operator.
+    schedule=(RAW_311_ASSET | RAW_TAXI_ASSET | RAW_NOISE_ASSET),
     catchup=False,
     max_active_runs=1,
     default_args={

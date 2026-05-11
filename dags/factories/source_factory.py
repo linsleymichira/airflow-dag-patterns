@@ -74,10 +74,11 @@ def build_source_dag(cfg: dict[str, Any]):
     socrata_url = _socrata_url(socrata_id)
 
     def _check_freshness(data_interval_start: pendulum.DateTime, **_: Any) -> bool:
-        # Same freshness-decision shape as the hand-written DAG; the human-owned
-        # rule lives in nyc_311_pipeline._check_freshness. Factory DAGs reuse the
-        # poll signal but raise until the decision is implemented, so an unset
-        # threshold can't silently emit empty Asset events from generated peers.
+        # Factory peers ship with a safe default freshness rule so they're runnable
+        # out of the box: proceed iff the source's max freshness timestamp is newer
+        # than the interval start. The hand-written nyc_311_pipeline keeps the
+        # TODO(human) hook because that's where the production-grade rule (which
+        # adds a row-count threshold) is meant to be authored.
         response = requests.get(
             socrata_url,
             params={"$select": f"max({freshness_field}) AS max_freshness"},
@@ -94,9 +95,7 @@ def build_source_dag(cfg: dict[str, Any]):
             max_freshness,
             data_interval_start,
         )
-        raise NotImplementedError(
-            f"Implement freshness decision for {name} (mirror nyc_311_pipeline)"
-        )
+        return max_freshness > data_interval_start
 
     @dag(
         dag_id=f"{name}_pipeline",
@@ -163,6 +162,23 @@ def build_source_dag(cfg: dict[str, Any]):
                 logger.info("[%s] no rows to load; emitting empty asset event", name)
                 return 0
             DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            records = [
+                (
+                    str(r.get(primary_key)),
+                    r.get(freshness_field.lstrip(":")) or r.get(freshness_field),
+                    _json.dumps(r),
+                )
+                for r in rows
+                if r.get(primary_key) is not None
+            ]
+            if not records:
+                # Surface the misconfig instead of silently emitting an empty Asset event.
+                # Usually means primary_key in sources.yaml doesn't match a real column in the
+                # Socrata response — check the source's API surface and update the YAML.
+                raise ValueError(
+                    f"[{name}] received {len(rows)} rows but none had a {primary_key!r} value; "
+                    f"check that '{primary_key}' is a real column on Socrata dataset {socrata_id}"
+                )
             with duckdb.connect(str(DUCKDB_PATH)) as conn:
                 conn.execute(f"CREATE SCHEMA IF NOT EXISTS {table}")
                 conn.execute(
@@ -175,15 +191,6 @@ def build_source_dag(cfg: dict[str, Any]):
                     )
                     """
                 )
-                records = [
-                    (
-                        str(r.get(primary_key)),
-                        r.get(freshness_field.lstrip(":")) or r.get(freshness_field),
-                        _json.dumps(r),
-                    )
-                    for r in rows
-                    if r.get(primary_key) is not None
-                ]
                 conn.executemany(
                     f"""
                     INSERT OR REPLACE INTO {table}.records ({primary_key}, freshness_at, raw, _loaded_at)
