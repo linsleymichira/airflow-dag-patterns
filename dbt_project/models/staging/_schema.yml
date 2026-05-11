@@ -10,3 +10,19 @@ models:
         tests: [not_null]
       - name: complaint_type
         tests: [not_null]
+
+  - name: stg_taxi_trips
+    description: Typed view over raw_taxi.records (factory-landed yellow taxi trips).
+    columns:
+      - name: trip_id
+        tests: [not_null, unique]
+      - name: pickup_at
+        tests: [not_null]
+
+  - name: stg_noise_complaints
+    description: 311 service requests filtered to complaint_type='Noise', factory-landed via raw_noise.records.
+    columns:
+      - name: unique_key
+        tests: [not_null, unique]
+      - name: complaint_date
+        tests: [not_null]

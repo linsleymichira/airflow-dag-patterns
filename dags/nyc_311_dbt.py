@@ -1,9 +1,9 @@
-"""Asset-triggered dbt transform DAG.
+"""Multi-Asset-triggered dbt transform DAG.
 
-Demonstrates pattern #3 from the README: data-aware downstream scheduling. This DAG
-has no cron; it fires the moment `nyc_311_pipeline` emits Asset("raw_311"). It then
-runs `dbt build --select state:modified+` over the embedded dbt project and emits
-Asset("mart_complaints_daily") on success.
+Demonstrates pattern #3 (data-aware downstream) and Design Decision #10 from the README:
+one dbt DAG subscribed to every raw_* Asset emitted by the hand-written pipeline AND the
+factory-generated peers. `dbt build --select state:modified+` then lets dbt's lineage
+graph decide what rebuilds — Airflow handles "when," dbt handles "what."
 """
 
 from __future__ import annotations
@@ -21,13 +21,15 @@ AIRFLOW_HOME = Path(os.environ.get("AIRFLOW_HOME", "/usr/local/airflow"))
 DBT_PROJECT_DIR = AIRFLOW_HOME / "dbt_project"
 
 RAW_311_ASSET = Asset("raw_311")
+RAW_TAXI_ASSET = Asset("raw_taxi")
+RAW_NOISE_ASSET = Asset("raw_noise")
 MART_ASSET = Asset("mart_complaints_daily")
 
 
 @dag(
     dag_id="nyc_311_dbt",
     start_date=pendulum.datetime(2026, 5, 1, tz="UTC"),
-    schedule=[RAW_311_ASSET],
+    schedule=[RAW_311_ASSET, RAW_TAXI_ASSET, RAW_NOISE_ASSET],
     catchup=False,
     max_active_runs=1,
     default_args={

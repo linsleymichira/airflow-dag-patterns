@@ -1,0 +1,33 @@
+# Sources fed to dags/factories/source_factory.py.
+# Each entry generates one extract+load DAG (`<name>_pipeline`) that mirrors the patterns
+# of the hand-written dags/nyc_311_pipeline.py — same idempotency contract, freshness sensor,
+# Asset outlet, and on_failure_callback.
+#
+# Field reference:
+#   name            — DAG id prefix; DAG registers as `<name>_pipeline`
+#   socrata_id      — 4x4 resource id on data.cityofnewyork.us
+#   primary_key     — column name used for INSERT OR REPLACE keying
+#   freshness_field — column polled by the freshness sensor and used for $where bounds
+#                     (e.g. ":updated_at" for the system field, or a domain column like
+#                     "tpep_pickup_datetime" for datasets without a system field)
+#   asset_uri       — Airflow 3 Asset URI emitted on successful load
+#   schedule        — cron string or @preset
+#   where_filter    — optional Socrata $where clause AND-ed onto the freshness window
+#                     (useful when the same dataset feeds multiple downstreams with
+#                     different filters; see nyc_noise_complaints below)
+
+sources:
+  - name: nyc_taxi
+    socrata_id: gkne-dk5s
+    primary_key: trip_id
+    freshness_field: tpep_pickup_datetime
+    asset_uri: raw_taxi
+    schedule: "@hourly"
+
+  - name: nyc_noise_complaints
+    socrata_id: erm2-nwe9
+    primary_key: unique_key
+    freshness_field: ":updated_at"
+    asset_uri: raw_noise
+    schedule: "@daily"
+    where_filter: "complaint_type='Noise'"

@@ -2,9 +2,8 @@ version: 2
 
 sources:
   - name: raw_311
-    database: nyc_311
     schema: raw_311
-    description: Raw NYC 311 service requests landed by the Airflow ingest DAG.
+    description: NYC 311 service requests landed by the hand-written nyc_311_pipeline DAG.
     tables:
       - name: complaints
         description: One row per 311 service request (natural key = unique_key).
@@ -13,3 +12,23 @@ sources:
             tests: [not_null, unique]
           - name: created_date
             tests: [not_null]
+
+  - name: raw_taxi
+    schema: raw_taxi
+    description: NYC Yellow Taxi trips landed by the factory-generated nyc_taxi_pipeline DAG.
+    tables:
+      - name: records
+        description: One row per trip (factory schema; primary key = trip_id; payload preserved in `raw`).
+        columns:
+          - name: trip_id
+            tests: [not_null, unique]
+
+  - name: raw_noise
+    schema: raw_noise
+    description: NYC 311 noise complaints subset landed by the factory-generated nyc_noise_complaints_pipeline DAG.
+    tables:
+      - name: records
+        description: Same source as raw_311 filtered to complaint_type='Noise' (primary key = unique_key).
+        columns:
+          - name: unique_key
+            tests: [not_null, unique]

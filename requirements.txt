@@ -5,3 +5,7 @@
 dbt-core>=1.7,<1.10
 dbt-duckdb>=1.7,<1.10
 # duckdb is pulled transitively by dbt-duckdb at a compatible version.
+
+# PyYAML ships with Airflow, but pin explicitly so the factory's config parsing
+# is reproducible under `astro dev parse` and CI.
+PyYAML>=6.0
