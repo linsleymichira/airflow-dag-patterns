@@ -1,8 +1,10 @@
 ## airflow-dag-patterns
 
-A minimal, runnable Airflow 3 reference pipeline demonstrating **six production orchestration patterns** on a live public API — one hand-written reference DAG, plus a **config-driven DAG factory** that generates peers from `include/sources.yaml`. Built with **Astro Runtime + dbt-core + DuckDB** so the whole pipeline runs end-to-end on a single `astro dev start`, no cloud accounts, no credentials, no waiting.
+Built entirely on public NYC Open Data (Socrata). No employer or proprietary data is used anywhere in this repo.
 
-> **Why this repo exists:** Airflow tutorials show you how to write *a* DAG. Production Airflow shows you how to write one that survives an on-call rotation — and how to write the *next* fifteen without copy-paste. This repo includes idempotent tasks, freshness-aware sensors, data-aware downstream triggering, structured alerting, a real dbt handoff, and a config-driven factory that turns a YAML file into N parallel pipelines. All on a laptop in five minutes.
+A minimal, runnable Airflow 3 reference pipeline demonstrating **six production orchestration patterns** on a live public API . one hand-written reference DAG, plus a **config-driven DAG factory** that generates peers from `include/sources.yaml`. Built with **Astro Runtime + dbt-core + DuckDB** so the whole pipeline runs end-to-end on a single `astro dev start`, no cloud accounts, no credentials, no waiting.
+
+> **Why this repo exists:** Airflow tutorials show you how to write *a* DAG. Production Airflow shows you how to write one that survives an on-call rotation . and how to write the *next* fifteen without copy-paste. This repo includes idempotent tasks, freshness-aware sensors, data-aware downstream triggering, structured alerting, a real dbt handoff, and a config-driven factory that turns a YAML file into N parallel pipelines. All on a laptop in five minutes.
 
 ---
 
@@ -13,7 +15,7 @@ A minimal, runnable Airflow 3 reference pipeline demonstrating **six production 
 3. **Data-aware downstream (Airflow 3 Assets)**  the load task emits an `Asset("raw_311")` event. The dbt DAG is scheduled on the asset, not on a cron. The dbt run fires the moment new data lands, not three minutes later, because the cron happened to align.
 4. **Structured `on_failure_callback` alerting**  every task wires a single callback that emits a JSON-shaped log line with run context (`dag_id`, `task_id`, `data_interval`, `try_number`, exception type, exception message). The exact shape an alerting backend (Slack, PagerDuty, OpsGenie) consumes without further parsing drops into a webhook, and you're paging.
 5. **TaskFlow API** The DAG is written in the modern decorator style (`@dag`, `@task`), with explicit XCom passing via return values rather than `xcom_push` / `xcom_pull` string lookups. Type-friendly, lint-friendly, and the style every Airflow doc has used since 2.0.
-6. **Config-driven DAG factory**  `dags/factories/source_factory.py` reads `include/sources.yaml` and registers one extract+load DAG per source listed. The five patterns above are encoded *once* inside `build_source_dag(cfg)` — adding a new source means ~6 lines of YAML, not a new DAG file. The hand-written `nyc_311_pipeline` DAG stays in `dags/` as the readable reference; the factory generates its peers.
+6. **Config-driven DAG factory**  `dags/factories/source_factory.py` reads `include/sources.yaml` and registers one extract+load DAG per source listed. The five patterns above are encoded *once* inside `build_source_dag(cfg)` . adding a new source means ~6 lines of YAML, not a new DAG file. The hand-written `nyc_311_pipeline` DAG stays in `dags/` as the readable reference; the factory generates its peers.
 
 ---
 
@@ -66,7 +68,7 @@ dags/factories/source_factory.py    ← reads YAML, loops, registers DAGs
                 │
                 ▼
         nyc_311_dbt DAG  (schedule = [Asset("raw_311"), Asset("raw_taxi"), Asset("raw_noise")])
-                │       single dbt DAG, multi-Asset trigger — Airflow runs it on any source landing
+                │       single dbt DAG, multi-Asset trigger . Airflow runs it on any source landing
                 ▼
         dbt build --select state:modified+
 ```
@@ -103,7 +105,7 @@ Every factory-generated DAG inherits the same five patterns as the hand-written 
 |---|---|---|
 | `dbt_build` | `BashOperator` | Runs `dbt build --select state:modified+ --profiles-dir /usr/local/airflow/dbt_project` from the embedded dbt project. Schedule: `[Asset("raw_311"), Asset("raw_taxi"), Asset("raw_noise")]`  multi-Asset trigger, fires whenever *any* source lands. `state:modified+` selector means only the affected models rebuild. Outlets `Asset("mart_complaints_daily")`. |
 
-> **Why one dbt DAG with a multi-Asset trigger instead of one dbt DAG per source?** The dbt project's lineage graph is already the source of truth — `state:modified+` reads the lineage and rebuilds the right slice automatically. Pairing one dbt DAG per source pushes responsibility for "what depends on what" into Airflow, where it doesn't belong.
+> **Why one dbt DAG with a multi-Asset trigger instead of one dbt DAG per source?** The dbt project's lineage graph is already the source of truth . `state:modified+` reads the lineage and rebuilds the right slice automatically. Pairing one dbt DAG per source pushes responsibility for "what depends on what" into Airflow, where it doesn't belong.
 
 #### `dags/factories/source_factory.py`  the DAG factory
 
@@ -131,13 +133,13 @@ sources:
     where_filter: "complaint_type='Noise'"
 ```
 
-> The hand-written `nyc_311_pipeline` DAG is **intentionally not generated by the factory** — it's the readable reference a hiring manager opens first. The factory generates its peers. Trade-off: a reviewer can't `grep dags/nyc_taxi_pipeline.py` because that file doesn't exist; the reference DAG is the anchor for understanding the generated ones.
+> The hand-written `nyc_311_pipeline` DAG is **intentionally not generated by the factory** . it's the readable reference a hiring manager opens first. The factory generates its peers. Trade-off: a reviewer can't `grep dags/nyc_taxi_pipeline.py` because that file doesn't exist; the reference DAG is the anchor for understanding the generated ones.
 
 #### `include/callbacks.py`  shared alert callback
 
 A single `alert_callback(context)` function that every task wires via `on_failure_callback`. Emits a JSON log line with `dag_id`, `task_id`, `data_interval_start`, `data_interval_end`, `try_number`, `exception_type`, `exception_message`, `log_url`. Drop in a Slack/PagerDuty webhook by changing one line.
 
-> The exact freshness threshold (how stale is "stale enough" to skip the run vs. proceed?) is the design decision in this repo most worth thinking about — too lax wastes credits on empty Asset events; too strict misses legitimate slow days. NYC 311 has known weekend cadences, so the production-grade rule keys off `:updated_at > data_interval_start` AND `row_count > 0` with the row-count threshold configurable per environment.
+> The exact freshness threshold (how stale is "stale enough" to skip the run vs. proceed?) is the design decision in this repo most worth thinking about . too lax wastes credits on empty Asset events; too strict misses legitimate slow days. NYC 311 has known weekend cadences, so the production-grade rule keys off `:updated_at > data_interval_start` AND `row_count > 0` with the row-count threshold configurable per environment.
 
 ---
 
