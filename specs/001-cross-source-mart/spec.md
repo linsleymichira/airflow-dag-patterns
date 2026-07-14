@@ -14,6 +14,17 @@ taxi dataset is a fixed 2014 snapshot with no date overlap with the live 311 fee
 date-and-borough join would always be empty. Traffic crashes are daily-fresh into 2026 and
 carry a native borough field, giving a real cross-domain join.
 
+## Clarifications
+
+### Session 2026-07-13
+
+- Q: Does this feature include landing the new traffic-crash source, or just the mart on top of
+  it? → A: Include landing the source (factory source entry, Asset wiring, dbt DAG
+  subscription, and source-count test update), so the mart runs end to end on first build.
+- Q: What should the crash contribution to the mart be? → A: Count plus severity, carrying
+  daily persons-injured and persons-killed alongside the crash count, enabling a
+  severity-normalized cross-source measure.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Compare NYC domains in one daily table (Priority: P1)
@@ -110,11 +121,13 @@ sources' counts zero.
   timestamp converted to America/New_York (US Eastern), so all domains bucket into the same
   civil day.
 - **FR-002**: For each date and borough, the model MUST carry the daily 311 complaint count,
-  the daily traffic crash count, and the daily noise complaint count, each sourced from the
-  corresponding landed dataset.
+  the daily traffic crash count, the daily persons-injured and persons-killed totals from
+  crashes, and the daily noise complaint count, each sourced from the corresponding landed
+  dataset.
 - **FR-003**: The model MUST expose at least one cross-source derived measure that is only
   computable by combining two or more sources. The flagship measure is 311 complaints per
-  traffic crash.
+  traffic crash. The crash contribution also carries severity, so the model MUST additionally
+  expose a severity-normalized measure, 311 complaints per person injured.
 - **FR-004**: The model MUST retain a date and borough row whenever at least one source
   reported activity, representing a non-reporting source's count as zero (and any derived
   measure it feeds as null) rather than omitting the row.
@@ -138,7 +151,8 @@ sources' counts zero.
 
 - **Cross-Source Daily Record**: one observation of activity for a single date and borough.
   Attributes: date, borough, per-source daily metrics (311 complaint count, traffic crash
-  count, noise complaint count), and one or more derived cross-source measures.
+  count, crash persons-injured and persons-killed totals, noise complaint count), and one or
+  more derived cross-source measures.
 - **Borough**: the shared spatial dimension across all three sources, including an explicit
   "Unknown" member for records whose location cannot be resolved.
 - **Source Contribution**: the per-source daily aggregate that feeds one metric column of the
@@ -173,8 +187,14 @@ sources' counts zero.
 - The contributing domains are 311 complaints, traffic crashes, and noise complaints. Traffic
   crashes replace the originally-listed taxi source, which is a dead 2014 snapshot with no
   overlap with the live 311 range. Adding a further source is out of scope for this feature.
-- The flagship derived measure is 311 complaints per traffic crash. Additional cross-source
-  measures are optional and may be added later without changing the grain.
+- Landing the traffic-crash source is part of this feature, not a prerequisite assumed to
+  exist. The feature delivers the crash source's daily landing and refresh, the mart's
+  dependency on it, and the source-count bookkeeping that adding a source requires. The mart
+  runs end to end on first build.
+- The flagship derived measure is 311 complaints per traffic crash. The crash contribution also
+  includes severity (persons injured, persons killed), supporting a severity-normalized measure
+  such as 311 complaints per person injured. Further cross-source measures may be added later
+  without changing the grain.
 - 311 complaints and noise complaints overlap by design, because noise is a filtered subset of
   311. The two are represented as separate metric columns and are not netted against each
   other.

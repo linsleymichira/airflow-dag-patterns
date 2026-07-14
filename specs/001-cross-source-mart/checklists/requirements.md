@@ -47,10 +47,12 @@
   set: BROOKLYN, QUEENS, BRONX, MANHATTAN, STATEN ISLAND. 311 additionally emits `Unspecified`
   and null, crashes emit null. All non-canonical values map to the Unknown bucket, so the
   date-and-borough join needs no borough recoding beyond that mapping.
-- Optional enhancement to consider in planning (not a blocker): the crash contribution is
-  specified as a daily crash record count. The collisions dataset also carries injury and
-  fatality measures (persons injured, persons killed), so the mart could later surface crash
-  severity if the analytics story wants it. Current spec keeps the simpler count.
+- Clarified 2026-07-13 (`/speckit-clarify`): the crash contribution is count plus severity
+  (daily persons injured and persons killed alongside the crash count). FR-002 and FR-003 were
+  updated, including a severity-normalized measure (311 complaints per person injured).
+- Clarified 2026-07-13 (`/speckit-clarify`): landing the traffic-crash source is in scope for
+  this feature (factory source entry, Asset wiring, dbt DAG subscription, source-count test
+  update), not a prerequisite. Recorded in the spec's Clarifications and Assumptions.
 - Watch item for planning: the 311-vs-noise overlap (noise is a filtered subset of 311) is
   intentional and kept as separate columns. Confirm this framing survives into the data model
   so consumers do not read the two counts as additive.
