@@ -88,6 +88,8 @@ The Socrata app token flows `.env` -> `airflow_settings.yaml` (`${SOCRATA_APP_TO
 `conftest.py` prepends repo root and `include/` to `sys.path` so `from include.callbacks import ...` resolves under bare pytest. Astro Runtime does this automatically in-container. CI and local pytest do not, so the shim is required for the import tests to pass outside Docker.
 
 <!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
+Active Spec Kit feature: **Cross-Source Daily Mart** (`specs/001-cross-source-mart/`).
+For technologies, project structure, and the design, read the plan at
+`specs/001-cross-source-mart/plan.md` (with `research.md`, `data-model.md`,
+`contracts/`, and `quickstart.md` alongside it).
 <!-- SPECKIT END -->
