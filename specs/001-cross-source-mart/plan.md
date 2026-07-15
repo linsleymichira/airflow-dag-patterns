@@ -14,6 +14,12 @@ the traffic-crash source through the existing config-driven factory, replacing t
 taxi source. The demo path is a backfill over the source overlap window, because the crash
 dataset lags 311 by roughly one month.
 
+That lag drives the two design decisions that most shape the model (both added 2026-07-14 after
+the `/speckit-checklist` pass). The mart reprocesses keys touched by newly-loaded source rows
+rather than by an event-date recency window, because a recency window anchored on the freshest
+source would never reach month-old crash dates. Every per-source metric carries a coverage flag,
+so an unpublished date reads as null-and-uncovered rather than as a factual zero.
+
 See [research.md](./research.md) for the resolved technical decisions, [data-model.md](./data-model.md)
 for the staging and mart shapes, [contracts/](./contracts/) for the mart output contract and
 the source-landing contract, and [quickstart.md](./quickstart.md) for the end-to-end
@@ -37,7 +43,7 @@ validation path.
 
 **Constraints**: Laptop-runnable and zero-cloud (Constitution). No new services, no credentials. Crash data lags 311 by ~1 month, so co-occurring rows exist only for dates the crash dataset has published (through ~2026-06-11)
 
-**Scale/Scope**: Demo scale. One new factory source, one new dbt mart, one new plus two updated staging views, one shared macro, one DAG-schedule edit
+**Scale/Scope**: Demo scale. One new factory source, one new dbt mart, one new plus two updated staging views, one shared macro, one DAG-schedule edit, one README section (FR-012)
 
 **Unknowns**: None. All open questions from the spec were resolved during `/speckit-clarify` and by live-API verification recorded in [research.md](./research.md)
 
@@ -47,19 +53,19 @@ validation path.
 
 |Principle|How this feature complies|
 |---|---|
-|I. Idempotent, interval-bounded tasks|Collisions extract is bounded by `crash_date` in `[data_interval_start, data_interval_end)` and loads via `INSERT OR REPLACE` on `collision_id`. `crash_date` is a stable event date, so a backfill re-pull upserts revised records idempotently. The mart is incremental `delete+insert` keyed on `[activity_date, borough]`.|
+|I. Idempotent, interval-bounded tasks|Collisions extract is bounded by `crash_date` in `[data_interval_start, data_interval_end)` and loads via `INSERT OR REPLACE` on `collision_id`. `crash_date` is a stable event date, so a backfill re-pull upserts revised records idempotently. Because extraction is bounded by `crash_date`, a record NYC publishes long after its event date is landed by running or re-running that record's interval, not by a forward run: the backfill run strategy (Decision 8) is what lands the lagging crash history, and FR-007's guarantee starts once a record is landed. The mart is incremental `delete+insert` keyed on `[activity_date, borough]`, reprocessing keys touched by source rows new since each source's own watermark plus keys whose coverage advanced (Decision 7), so a rebuild against an unchanged snapshot is value-identical.|
 |II. Freshness-aware, slot-respecting scheduling|The collisions pipeline inherits the factory's reschedule-mode `PythonSensor`. On bleeding-edge dates the sensor correctly waits (then times out) until NYC publishes the next monthly crash batch. The demo runs via backfill over the published overlap window.|
 |III. Data-aware scheduling via Assets|The collisions pipeline emits `Asset("raw_collisions")`. `nyc_311_dbt` subscribes with `schedule=(RAW_311 \| RAW_COLLISIONS \| RAW_NOISE)` (OR semantics) and adds `Asset("mart_cross_source_daily")` as an outlet.|
 |IV. Structured failure alerting on every task|The collisions pipeline inherits `on_failure_callback=alert_callback` from the factory `default_args`. No new task bypasses it.|
 |V. TaskFlow API + Airflow 3 conventions|No new hand-written DAG. The source is added via the factory (TaskFlow already). No imports outside the Airflow 3 surface.|
 |VI. Config-driven scale-out behind a hand-written reference|The crash source is a `include/sources.yaml` edit, not a new DAG file. The hand-written `nyc_311_pipeline` remains the anchor reference.|
 
-**Spec-to-code reconciliation (recorded here, not a violation)**: the committed spec
-clarification lists a "source-count test update" as part of the scope. In this repo
-`test_total_dag_count` derives the expected count dynamically as `2 + len(sources)`, so
-replacing the taxi source with collisions keeps the count at 4 and needs **no** test edit. The
-clarification's intent (the count test stays green) holds. The wording was imprecise. Adding a
-factory source needs no test change here.
+**Spec-to-code reconciliation (resolved 2026-07-14)**: the spec clarification originally listed
+a "source-count test update" as part of the scope. In this repo `test_total_dag_count` derives
+the expected count dynamically as `2 + len(sources)`, so replacing the taxi source with
+collisions keeps the count at 4 and needs **no** test edit. The conflict was surfaced by
+`checklists/mart.md` CHK020 and the spec text has since been corrected in place, so the plan and
+the spec now agree. FR-011 carries the real obligation: the count test must stay green.
 
 **Result**: PASS. No complexity deviations to justify.
 
@@ -84,6 +90,8 @@ specs/001-cross-source-mart/
 ### Source code (repository root): files this feature will touch
 
 ```text
+README.md                                # FR-012: describe the cross-source model
+
 include/
 └── sources.yaml                         # REPLACE nyc_taxi entry with nyc_collisions
 
@@ -99,8 +107,8 @@ dbt_project/
     │   ├── _schema.yml                   # drop stg_taxi_trips, add stg_collisions
     │   ├── stg_taxi_trips.sql            # DELETE (taxi retired)
     │   ├── stg_collisions.sql            # NEW: typed view over raw_collisions.records
-    │   ├── stg_311_complaints.sql        # apply normalize_borough
-    │   └── stg_noise_complaints.sql      # apply normalize_borough
+    │   ├── stg_311_complaints.sql        # normalize_borough; project _loaded_at
+    │   └── stg_noise_complaints.sql      # normalize_borough; project _loaded_at
     └── marts/
         ├── _schema.yml                   # add mart_cross_source_daily tests
         └── mart_cross_source_daily.sql   # NEW: the cross-source daily mart

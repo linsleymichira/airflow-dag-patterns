@@ -14,28 +14,58 @@ One row per `(activity_date, borough)`. Uniqueness is enforced by
 |---|---|---|---|
 |`activity_date`|DATE|no|Shared calendar date, America/New_York civil day|
 |`borough`|VARCHAR|no|One of BROOKLYN, QUEENS, BRONX, MANHATTAN, STATEN ISLAND, Unknown|
-|`complaint_count`|BIGINT|no|>= 0. Daily 311 complaints, 0 when the source did not report|
-|`crash_count`|BIGINT|no|>= 0. Daily crash records, 0 when the source did not report|
-|`persons_injured`|BIGINT|no|>= 0. Daily crash persons injured|
-|`persons_killed`|BIGINT|no|>= 0. Daily crash persons killed|
-|`noise_count`|BIGINT|no|>= 0. Daily noise complaints, 0 when the source did not report|
-|`complaints_per_crash`|DOUBLE|yes|`complaint_count / crash_count`. Null when `crash_count = 0`|
-|`complaints_per_person_injured`|DOUBLE|yes|`complaint_count / persons_injured`. Null when `persons_injured = 0`|
+|`complaint_count`|BIGINT|yes|>= 0 when `c311_covered`. Null when uncovered|
+|`c311_covered`|BOOLEAN|no|Whether 311 has published `activity_date`|
+|`crash_count`|BIGINT|yes|>= 0 when `crashes_covered`. Null when uncovered|
+|`persons_injured`|BIGINT|yes|>= 0 when `crashes_covered`. Null when uncovered|
+|`persons_killed`|BIGINT|yes|>= 0 when `crashes_covered`. Null when uncovered|
+|`crashes_covered`|BOOLEAN|no|Whether the crash source has published `activity_date`|
+|`noise_count`|BIGINT|yes|>= 0 when `noise_covered`. Null when uncovered|
+|`noise_covered`|BOOLEAN|no|Whether the noise source has published `activity_date`|
+|`complaints_per_crash`|DOUBLE|yes|`complaint_count / crash_count`. Null when `crash_count` is 0 or uncovered|
+|`complaints_per_person_injured`|DOUBLE|yes|`complaint_count / persons_injured`. Null when `persons_injured` is 0 or uncovered|
+
+## Reading the coverage flags (required)
+
+A null count does **not** mean zero activity. Always read a count with its flag:
+
+|State|Meaning|
+|---|---|
+|`crash_count = 0` and `crashes_covered`|The source published this date and saw no crashes|
+|`crash_count IS NULL` and not `crashes_covered`|The source has not published this date yet|
+
+Traffic crashes lag 311 by roughly one month, so recent dates are routinely uncovered for
+crashes while fully covered for 311. Treating a null as zero would report "no crashes" on every
+recent day.
 
 ## Guarantees
 
 - **Completeness (FR-004, SC-002)**: a row exists for every `(activity_date, borough)` where any
   source reported activity. No key is dropped.
-- **Deterministic missing semantics (FR-004, FR-006)**: absent-source counts are 0. Derived
-  measures with a zero denominator are null, never an error.
-- **Reconciliation (SC-003)**: each per-source count equals that source's standalone daily
-  aggregate for the same key.
+- **Deterministic missing semantics (FR-004, FR-006)**: a count is 0 only for
+  published-and-empty, and null only for uncovered. Derived measures with a zero, missing, or
+  uncovered denominator are null, never an error.
+- **Reconciliation (FR-009, SC-003)**: each per-source count equals that source's standalone
+  daily aggregate for the same key. Verified by sampling keys, not by an exhaustive automated
+  comparison.
 - **Idempotent rebuild (FR-007, SC-004)**: rebuilding against an unchanged source snapshot
-  changes zero rows. A newer snapshot refreshes only affected keys within the trailing window.
-- **Borough domain (FR-005)**: `borough` is always one of the six canonical values.
+  leaves every row value-identical. Newer source records refresh exactly the keys they touch,
+  with no recency ceiling, so an arbitrarily late-arriving record still lands.
+- **Borough domain (FR-005)**: `borough` is always one of the six canonical values, and
+  `Unknown` carries the same metrics and measures as any canonical borough.
+- **Non-additivity (FR-010)**: `complaint_count` and `noise_count` overlap by design. Do not sum
+  them.
 
 ## Enforcing tests (dbt)
 
-- `not_null` on `activity_date`, `borough`, `complaint_count`, `crash_count`, `noise_count`.
+- `not_null` on `activity_date`, `borough`, and the three `*_covered` flags.
 - `dbt_utils.unique_combination_of_columns(['activity_date', 'borough'])`.
 - `accepted_values` on `borough` = the six canonical values.
+- `dbt_utils.expression_is_true` per source, asserting the count is null if and only if the
+  source is uncovered (for example `(crash_count is null) = (not crashes_covered)`).
+- `dbt_utils.expression_is_true` per covered measure, asserting non-negativity wherever the
+  coverage flag is true (for example `not crashes_covered or (crash_count >= 0 and
+  persons_injured >= 0 and persons_killed >= 0)`). Uncovered values stay nullable.
+
+Counts are deliberately not `not_null`, because a null count is the meaningful uncovered signal
+rather than a defect.

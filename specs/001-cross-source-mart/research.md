@@ -49,14 +49,18 @@ null, crashes emit null, all of which map to `Unknown`. A single macro keeps the
 ## Decision 4: Cross-source join strategy
 
 **Decision**: Build one daily aggregate CTE per source, union their `(activity_date, borough)`
-keys into a key spine, then left-join each source aggregate onto the spine. Coalesce missing
-counts to 0. Compute derived measures with `nullif(denominator, 0)` so they resolve to null
-rather than error.
+keys into a key spine, then left-join each source aggregate onto the spine. Compute derived
+measures with `nullif(denominator, 0)` so they resolve to null rather than error.
+
+**Amended 2026-07-14**: this decision originally said "coalesce missing counts to 0"
+unconditionally. Decision 7a supersedes that. A missing count coalesces to 0 only where the
+source has published the date. Where the source has not published it, the count stays null and
+the source is marked uncovered.
 
 **Rationale**: The key-spine + left-join pattern satisfies FR-004 (a row exists whenever any
-source reported) without dropping keys, and cleanly yields count=0 for non-reporting sources
-and null for uncomputable derived measures (FR-006). It is clearer than a chained full outer
-join and easy to test.
+source reported) without dropping keys, and cleanly separates published-and-empty (0) from
+uncovered (null) once the coverage flags gate the coalesce. It is clearer than a chained full
+outer join and easy to test.
 
 ## Decision 5: Timezone handling (verified)
 
@@ -79,30 +83,101 @@ date and borough) alongside the crash record count. Expose `complaints_per_perso
 decision chose count plus severity. Summing severity per key mirrors the count aggregation and
 inherits the same missing-source and null-denominator handling.
 
-## Decision 7: Mart materialization and late-arrival window
+## Decision 7: Mart materialization and late-arrival handling
+
+**Superseded 2026-07-14.** The original decision (incremental `delete+insert` with a trailing
+`activity_date >= max(activity_date) - INTERVAL 3 DAY` filter) was withdrawn after the
+`/speckit-checklist` pass. It was not merely under-specified, it was structurally wrong for
+this feature's data: the mart's `max(activity_date)` is driven by 311, which is fresh to today,
+so the window covers roughly the last three days, while crash batches publish `crash_date`
+values about a month old. Those rows fall entirely outside the window, so crash data would
+never enter the mart on a forward run. The original note conceded that late records "are
+missed" without recognizing that for the crash source the miss is total, not marginal.
 
 **Decision**: Materialize `mart_cross_source_daily` as incremental `delete+insert` on
-`unique_key=['activity_date', 'borough']`, mirroring `mart_complaints_daily`. The incremental
-filter reprocesses a trailing window (`activity_date >= max(activity_date) - INTERVAL 3 DAY`)
-rather than strictly `>= max`.
+`unique_key=['activity_date', 'borough']`, with the incremental filter driven by **which source
+rows are new**, not by event-date recency. Staging models expose `_loaded_at`. The mart
+reprocesses the union of two key sets:
 
-**Rationale**: A strict `>= max(activity_date)` filter (as `mart_complaints_daily` uses) would
-never re-touch an already-built date, so a late-reported record with an older event date would
-never enter the mart. That contradicts the FR-007 / FR-008 distinction between an unchanged
-snapshot (zero rows change) and a newer snapshot (refresh affected keys). A short trailing
-reprocess window catches late arrivals within a bounded, deterministic range. The tradeoff
-(records that arrive later than the window are missed) is documented, matching the demo's
-tolerance.
+1. Keys touched by source rows whose `_loaded_at` is at or past **that source's own** high-water
+   mark. Watermarks are per source, not shared: sources publish independently, so a crash batch
+   can land with a `_loaded_at` older than 311's watermark, and a single shared watermark would
+   silently skip it. The comparison is inclusive for tie-safety, since reprocessing is
+   idempotent.
+2. Keys whose coverage advanced. When a source publishes a new batch, previously-uncovered dates
+   must flip to covered with a true zero. No source row touches those keys, so the watermark
+   filter alone would leave the flag stale forever.
+
+**Scope**: this governs the model layer and takes landing as given. The extract requests records
+by event date for the interval being run, so a late-published record is landed when its interval
+is run or re-run, which is exactly the documented backfill run strategy (Decision 8). The mart
+cannot refresh a record the extract never pulled.
+
+**Rationale**: The change signal must match the thing that actually changes. For a source that
+publishes month-old event dates in monthly batches, "the row is new to us" is the only correct
+trigger, whereas "the event date is recent" is uncorrelated with arrival. Keying on `_loaded_at`
+satisfies FR-007's bound (refresh exactly the keys new records touch, with no recency
+ceiling) and admits arbitrarily late arrivals. It is also the honest incremental pattern to
+demonstrate in a portfolio repo, since the naive calendar window is exactly the trap this
+dataset exposes.
+
+**Alternatives considered**:
+
+- **Full refresh (table)** (rejected). Correct by construction and nearly free at demo scale,
+  but it sidesteps the interesting problem rather than modeling it.
+- **Wider calendar lookback (e.g. 45 days)** (rejected). The same defect at a larger radius:
+  still an arbitrary number, still silently misses anything older than the guess.
+
+**Divergence from `mart_complaints_daily`** (intentional): the single-source mart keeps its
+simple `>= max(activity_date)` filter, because 311 has no publication lag. Two marts with two
+strategies, each matched to its inputs, is a better teaching artifact than two identical ones.
+
+**Recorded as**: ADR `2026-07-14-cross-source-mart-incremental-strategy`.
+
+## Decision 7a: Coverage semantics (added 2026-07-14)
+
+**Decision**: Carry a per-source coverage indicator on every row. A per-source count is `0` only
+when that source has published the date and observed no qualifying events. When the source has
+not published the date, the count is `NULL` and the source is marked uncovered. Coverage is
+derived from each source's maximum published event date (its publication frontier), which the
+freshness field already carries.
+
+**Contiguity assumption**: a frontier marks every earlier date covered, which is correct only if
+the source publishes contiguously up to it. The NYC feeds do. A source with interior publication
+holes would mark a skipped date covered and report a true zero for a date it never published. If
+that ever occurs, coverage must move from a single frontier to an explicit per-date publication
+manifest. The assumption is recorded in the spec rather than left implicit in the SQL, because
+it is the one thing that would make coverage lie in the same way the old zero did.
+
+**Rationale**: FR-004 originally called an absent source's count "zero" without distinguishing
+"published and empty" from "not published yet". Because crashes lag 311 by roughly a month,
+every recent date would have read `crash_count = 0`, telling a consumer that no crashes
+occurred when the truth is that none have been published. The mart would have been least
+trustworthy on its freshest rows. Coverage flags also disambiguate a null derived measure,
+which otherwise meant both "no crashes" and "no crash data".
+
+**Alternatives considered**: accept and document the lag (rejected: pushes a correctness
+problem onto every reader), or restrict the grain to fully-published dates (rejected: weakens
+User Story 3 and hides recent 311 activity behind the crash lag).
+
+**Recorded as**: ADR `2026-07-14-cross-source-mart-coverage-flags`.
 
 ## Decision 8: Run strategy (backfill over the overlap window)
 
-**Decision**: The demo runs via `airflow dags backfill` over roughly `2026-05-01` (the DAG
-start date) through `2026-06-10` for both the 311 and collisions pipelines, then a `dbt build`.
-Forward `@daily` runs on bleeding-edge dates are expected to reschedule and time out on the
-crash sensor until NYC publishes the next monthly batch.
+**Decision**: The demo runs via `airflow dags backfill` from roughly `2026-05-01` (the DAG start
+date), then a `dbt build`. The two pipelines get **different end dates**, deliberately:
+collisions stop at `~2026-06-10` (a day inside the published crash data), while 311 runs a month
+further to `~2026-07-10`. Forward `@daily` runs on bleeding-edge dates are expected to reschedule
+and time out on the crash sensor until NYC publishes the next monthly batch.
+
+**Amended 2026-07-14**: this originally backfilled both pipelines to the same `2026-06-10`. That
+covers the overlap region but produces no region where a source is legitimately uncovered, so
+the coverage semantics (Decision 7a) would be undemonstrable and the quickstart's coverage check
+would return zero rows. Running 311 past the crash frontier yields both regions the model needs
+to show.
 
 **Rationale**: With `catchup=False`, history is only produced by an explicit backfill. Crash
-data lags 311 by ~1 month, so co-occurring rows exist only inside the overlap window. The
+data lags 311 by ~1 month, so co-occurring rows exist only inside the overlap region. The
 strict `>` sensor means the interval whose `data_interval_start` equals `max(crash_date)` does
 not fire, so the window ends a day inside the published data (`~2026-06-10`). The timed-out
 forward behavior is the freshness sensor (Principle II) working correctly, not a bug.
