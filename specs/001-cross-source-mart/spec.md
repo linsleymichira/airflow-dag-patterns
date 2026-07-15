@@ -223,9 +223,13 @@ published that date.
     that lags by design (traffic crashes lag roughly one month) would otherwise emit a failure
     signal on every forward run, training the reader to ignore it.
 - **FR-009**: Each per-source metric in the model MUST equal that source's standalone daily
-  aggregate for the same date and borough, so the combined view reconciles to its inputs.
-  Reconciliation is verified by sampling keys (see SC-003), not by an exhaustive automated
-  comparison.
+  aggregate for the same date and borough **wherever that source covers the date**, so the
+  combined view reconciles to its inputs. Reconciliation is scoped to covered metrics because
+  coverage is a property of a source on a key, not of the key: where a source does not cover the
+  date, its metric MUST be null (FR-004) while a standalone aggregate over the unpublished date
+  returns zero, so an equality check there would fail on correct data. The uncovered case is
+  therefore verified as a null-and-uncovered assertion rather than by equality. Reconciliation is
+  verified by sampling keys (see SC-003), not by an exhaustive automated comparison.
 - **FR-010**: The 311 complaint count and the noise complaint count MUST be presented as
   independent columns and MUST NOT be summed or netted against each other. Noise complaints are
   a filtered subset of the same 311 dataset, so the two counts overlap by design and adding
@@ -263,10 +267,15 @@ published that date.
   source reported activity, with zero dropped keys.
 - **SC-003**: Reconciliation passes for 100% of a defined sample: at least 10 date-and-borough
   keys, drawn to include at least two distinct boroughs, at least one `Unknown`-borough key, at
-  least one key inside the fully-covered overlap region, and at least one key where a source is
-  uncovered. For each sampled key, every per-source metric equals that source's standalone daily
-  aggregate. The sample is specified so the criterion is falsifiable: "100% of sampled keys" with
-  an undefined sample would pass on a sample of one.
+  least one key inside the fully-covered overlap region, at least one key where a source covers
+  the date but reported nothing, and at least one key where a source does not cover the date. For
+  each sampled key, each source is checked independently against its own coverage flag: where the
+  source covers the date its metric equals that source's standalone daily aggregate (including
+  zero where it published and saw nothing), and where it does not cover the date its metric is
+  null and its flag is false. The two checks are not interchangeable, since a standalone
+  aggregate over an unpublished date returns zero while the model correctly returns null, so
+  demanding equality there would fail on correct data. The sample is specified so the criterion
+  is falsifiable: "100% of sampled keys" with an undefined sample would pass on a sample of one.
 - **SC-004**: Rebuilding any previously built date range against an unchanged source snapshot
   leaves every existing row value-identical across its reported columns (the date, borough,
   per-source metrics, coverage flags, and derived measures). "Changes zero rows" is measured by

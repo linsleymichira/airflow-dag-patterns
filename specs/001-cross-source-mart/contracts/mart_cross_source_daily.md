@@ -46,7 +46,10 @@ recent day.
   published-and-empty, and null only for uncovered. Derived measures with a zero, missing, or
   uncovered denominator are null, never an error.
 - **Reconciliation (FR-009, SC-003)**: each per-source count equals that source's standalone
-  daily aggregate for the same key. Verified by sampling keys, not by an exhaustive automated
+  daily aggregate for the same key **wherever that source's `*_covered` flag is true**. Where the
+  flag is false the count is null by design, and a standalone aggregate over the unpublished date
+  would return zero, so the two are not comparable and the uncovered case is verified as a
+  null-and-uncovered assertion instead. Verified by sampling keys, not by an exhaustive automated
   comparison.
 - **Idempotent rebuild (FR-007, SC-004)**: rebuilding against an unchanged source snapshot
   leaves every row value-identical. Newer source records refresh exactly the keys they touch,
