@@ -123,8 +123,15 @@ and retires the pre-existing broken taxi config as a side effect.
 
 No constitution violations. However, the 2026-07-14 amendments materially increased this
 feature's complexity, and the honest accounting is below rather than a bare "no entries
-required". Every item traces to a requirement, but the aggregate is worth ratifying before
-implementation.
+required". Every item traces to a requirement.
+
+**Ratified 2026-07-14.** The aggregate was put to the user before implementation, with the
+alternative being a trim to full refresh (dropping the incremental filter and all three
+watermark columns, keeping the coverage flags). The current design stands: the complexity is a
+faithful response to a genuinely lagging real-world source, and `mart_complaints_daily` already
+demonstrates the simple incremental pattern, so trimming would leave the repo with no answer to
+the lagging-source case. Recorded as ADR `2026-07-14-cross-source-mart-complexity-ratified`.
+The trim stays cheap if the mart later proves harder to maintain than it teaches.
 
 |Added complexity|Why it exists|Simpler alternative rejected|
 |---|---|---|
@@ -133,13 +140,13 @@ implementation.
 |Three internal watermark columns|Required by the per-source arm above|One shared watermark. Rejected: silently skips crash batches|
 |Contiguous-publication assumption|Coverage is derived from each source's furthest-published event date|A per-date publication manifest. Deferred as heavier than a demo needs|
 
-**Constitution tension worth naming (Principle VI, Simplicity First)**: `mart_cross_source_daily`
-is now the most elaborate model in the repo, well past the hand-written `mart_complaints_daily`
-reference it was meant to mirror. That is defensible, since the complexity is a faithful response
-to a genuinely lagging real-world source and is exactly the judgment a portfolio repo should
-demonstrate. It is not free. If the goal is the simplest artifact that teaches multi-source
-orchestration, the full-refresh option (research.md Decision 7, rejected) removes the incremental
-filter and the watermark columns outright, keeping only the coverage flags.
+**Constitution tension named and accepted (Principle VI, Simplicity First)**:
+`mart_cross_source_daily` is now the most elaborate model in the repo, well past the
+hand-written `mart_complaints_daily` reference it was meant to mirror. The tension is real and
+is accepted rather than resolved by simplification, per the ratification above. The two marts
+diverge on purpose: the single-source mart has no lagging input and keeps a simple
+`>= max(activity_date)` filter, while this one carries the full apparatus. Two strategies, each
+matched to its inputs, is the teaching artifact.
 
 **Known edge in the coverage model** (implementation watch-item): coverage is derived from
 `max(event_date)` over each source's landed rows, which equates "the source's last day with any
