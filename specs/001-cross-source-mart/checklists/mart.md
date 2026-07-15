@@ -192,3 +192,41 @@ Also applied: FR-006 enumerates the four cases behind a null severity measure, S
 falsifiable sample, FR-008 specifies the observable stalled-source behavior, the CHK017
 assumption states concrete region durations, and both derived measures gained
 `expression_is_true` null-semantics tests.
+
+### Third review round (2026-07-14)
+
+**The severity semantics were verified properly and changed again.** The second round replaced a
+`coalesce(severity, 0)` with a plain `sum()`, which still silently skipped unreported rows and
+presented a partial total as the day's fact. Checking the live API settled it:
+
+- NYC writes an explicit `0` when it means zero. Of the 903 demo-window rows reporting
+  `number_of_persons_killed`, 895 are `0`. January 2020 has 14,349 explicit zeros and no nulls.
+  A missing field is therefore a pending determination, not a sparse zero.
+- The two severity fields diverge sharply. `number_of_persons_injured` has **zero** nulls in the
+  demo window (18 in total, all 2016 to 2021). `number_of_persons_killed` is missing on
+  **8,832 of 9,735 demo-window rows (90.7%)**, because recent fatality determinations lag.
+
+Severity is now aggregated **all-or-null**: a day's total survives only when every crash row that
+day reports the field. Recent borough-days will carry a null `persons_killed`, which is correct,
+and independently vindicates the FR-002 decision not to derive any measure from persons-killed.
+`complaints_per_person_injured` is unaffected, since injuries are always reported in the window.
+
+**A derived-measure test was wrong.** `complaints_per_crash is null = (crash_count is null or
+crash_count = 0)` fails on correct data when 311 is uncovered and crashes are covered: the ratio
+is null via its numerator while the right side reads false. Both invariants now include the
+numerator arm.
+
+**FR-004's coverage is narrowed rather than generalized.** The frontier method is a proxy valid
+only for sources that publish contiguously AND carry at least one event per published day
+citywide. The spec now scopes FR-004 to those two conditions and names what a failing source
+would look like, instead of implying a general mechanism. Landed-interval metadata would remove
+the proxy, but Airflow owns which intervals ran and the DuckDB landing tables record only rows,
+so a publication manifest stays deferred.
+
+**One finding was skipped.** A request to capture prior grain keys before a revised `crash_date`
+or `borough` is applied, so `delete+insert` can clear stale keys. It is not implementable where
+it was asked: the landing table's `INSERT OR REPLACE` overwrites the record in place at load
+time, so by the time dbt runs, the prior key is already destroyed and unrecoverable from the
+model. Recovering it needs a dbt snapshot over the landing table, which is exactly the mutable-
+grain limitation already recorded in the spec's Assumptions and the plan's Complexity Tracking,
+and which the user ratified with that cost named.

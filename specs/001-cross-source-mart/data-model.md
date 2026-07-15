@@ -150,11 +150,14 @@ c311 as (
 crashes as (
   select crash_date as activity_date, borough,
          count(*) as crash_count,
-         -- NO coalesce to 0: a missing severity field means UNREPORTED, not zero (verified,
-         -- see below). sum() skips nulls, so a key yields null only when every one of its
-         -- crash rows omits the field, which is honestly "unknown" rather than a fabricated 0.
-         sum(persons_injured) as persons_injured,
-         sum(persons_killed)  as persons_killed,
+         -- All-or-null, NOT sum(): a missing severity field means UNREPORTED (verified below).
+         -- count(col) counts non-nulls, so the sum survives only when every crash row that day
+         -- reports the field. A plain sum() would silently skip the unreported rows and present
+         -- a partial total as the day's fact, which is the same fabrication as coalescing to 0.
+         case when count(persons_injured) = count(*)
+              then sum(persons_injured) end as persons_injured,
+         case when count(persons_killed) = count(*)
+              then sum(persons_killed) end  as persons_killed,
          max(_loaded_at) as loaded_at
   from {{ ref('stg_collisions') }} group by 1, 2
 ),
@@ -248,16 +251,29 @@ Those differ only when the frontier day itself had zero qualifying events citywi
 above by reusing 311's frontier. A publication manifest keyed on which intervals actually ran
 would remove the residual edge, and is deferred as heavier than the demo needs.
 
-**Severity nulls mean UNREPORTED, not zero** (verified against `h9gi-nx95` on 2026-07-14). 18 of
-2,269,187 rows omit `number_of_persons_injured` and 8,913 omit `number_of_persons_killed`. A
-sampled omitting row (`collision_id` 4387369) carries `number_of_cyclist_injured: 1`, proving a
-person was injured while the persons-injured field is simply absent. Coalescing the field to 0
-would therefore fabricate an injury-free day out of missing data, so the model does not do it:
-`sum()` skips nulls, and a key yields null only when every one of its crash rows omits the
-field. A covered day with no crashes at all still reads 0, because that zero is a fact rather
-than an absence. A null `persons_injured` on a covered day with crashes means "severity
-unreported", and `complaints_per_person_injured` is null there rather than dividing by a
-fabricated zero.
+**Severity nulls mean UNREPORTED, not zero** (verified against the live `h9gi-nx95` API on
+2026-07-14). The evidence is decisive:
+
+- The source reports zero explicitly. Of the 903 rows in the demo window
+  (`crash_date >= 2026-05-01`) that carry `number_of_persons_killed`, **895 are `0`** and 8 are
+  above zero. January 2020 alone has 14,349 explicit zeros and **no** nulls. A missing field is
+  therefore not a sparse encoding of zero, because zero has its own representation.
+- A sampled omitting row (`collision_id` 4387369, 2021) carries `number_of_cyclist_injured: 1`,
+  so a person was injured while `number_of_persons_injured` is simply absent.
+
+The two fields behave very differently, which matters for what the mart can promise:
+
+|Field|Nulls overall|Nulls in the demo window|Reading|
+|---|---|---|---|
+|`number_of_persons_injured`|18 of 2,269,187, all 2016 to 2021|**0**|Effectively always reported. Within the demo window the injury metric and `complaints_per_person_injured` are unaffected. Outside it, the 18 historical omissions null their own borough-days by the same all-or-null rule|
+|`number_of_persons_killed`|8,913, up to the frontier|**8,832 of 9,735 rows (90.7%)**|Recent fatality determinations are pending. NYC finalizes them later|
+
+Consequently severity is aggregated **all-or-null**, not summed across nulls: a day's total
+survives only when every crash row that day reports the field. A partial sum would present the
+known 9% as the day's fatality count and understate it as fact. Recent borough-days will
+therefore carry a null `persons_killed`, which is the honest answer, and this independently
+vindicates the FR-002 decision not to derive any measure from persons-killed. A covered day with
+no crashes at all still reads 0, because that zero is a fact rather than an absence.
 
 **Known limitation, mutable grain** (accepted, not designed around): the incremental filter
 reprocesses keys reachable from *current* source rows. If NYC revises a record so its
@@ -281,9 +297,11 @@ Tests (marts `_schema.yml`):
   coalesce(persons_injured, 0) >= 0 and coalesce(persons_killed, 0) >= 0)`. Severity is null-
   tolerant even when covered, because an omitted source field means unreported.
 - `dbt_utils.expression_is_true` per derived measure, asserting it is null exactly when its
-  denominator is unusable and a real ratio otherwise:
-  - `complaints_per_crash is null = (crash_count is null or crash_count = 0)`
-  - `complaints_per_person_injured is null = (persons_injured is null or persons_injured = 0)`
+  numerator is unavailable or its denominator is unusable, and a real ratio otherwise. The
+  numerator arm is load-bearing: a null `complaint_count` (311 uncovered) yields a null ratio
+  even where the denominator is fine, so omitting it would fail the test on correct data.
+  - `complaints_per_crash is null = (complaint_count is null or crash_count is null or crash_count = 0)`
+  - `complaints_per_person_injured is null = (complaint_count is null or persons_injured is null or persons_injured = 0)`
 
 Counts are deliberately **not** `not_null`, because a null count is the meaningful uncovered
 signal. Severity columns are not `not_null` either, because a null there means the source did

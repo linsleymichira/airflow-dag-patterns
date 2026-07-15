@@ -22,8 +22,8 @@ One row per `(activity_date, borough)`. Uniqueness is enforced by
 |`crashes_covered`|BOOLEAN|no|Whether the crash source has published `activity_date`|
 |`noise_count`|BIGINT|yes|>= 0 when `noise_covered`. Null when uncovered|
 |`noise_covered`|BOOLEAN|no|Whether the noise source has published `activity_date`|
-|`complaints_per_crash`|DOUBLE|yes|`complaint_count / crash_count`. Null when `crash_count` is 0 or uncovered|
-|`complaints_per_person_injured`|DOUBLE|yes|`complaint_count / persons_injured`. Null when `persons_injured` is 0 or uncovered|
+|`complaints_per_crash`|DOUBLE|yes|`complaint_count / crash_count`. Null when the numerator is null (311 uncovered), or `crash_count` is 0 or null|
+|`complaints_per_person_injured`|DOUBLE|yes|`complaint_count / persons_injured`. Null when the numerator is null, or `persons_injured` is 0 or null (uncovered, or severity unreported)|
 
 ## Reading the coverage flags (required)
 
@@ -68,9 +68,11 @@ recent day.
   (crash_count >= 0 and coalesce(persons_injured, 0) >= 0 and coalesce(persons_killed, 0) >=
   0)`). Uncovered values stay nullable, and severity stays nullable even when covered.
 - `dbt_utils.expression_is_true` per derived measure, asserting it is null exactly when its
-  denominator is unusable and a real ratio otherwise:
-  `complaints_per_crash is null = (crash_count is null or crash_count = 0)` and
-  `complaints_per_person_injured is null = (persons_injured is null or persons_injured = 0)`.
+  numerator is unavailable or its denominator is unusable, and a real ratio otherwise:
+  `complaints_per_crash is null = (complaint_count is null or crash_count is null or
+  crash_count = 0)` and `complaints_per_person_injured is null = (complaint_count is null or
+  persons_injured is null or persons_injured = 0)`. The numerator arm matters: a null
+  `complaint_count` (311 uncovered) nulls the ratio even where the denominator is fine.
 
 Counts are deliberately not `not_null`, because a null count is the meaningful uncovered signal
 rather than a defect.

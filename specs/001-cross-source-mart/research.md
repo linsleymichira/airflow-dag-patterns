@@ -142,12 +142,27 @@ not published the date, the count is `NULL` and the source is marked uncovered. 
 derived from each source's maximum published event date (its publication frontier), which the
 freshness field already carries.
 
-**Contiguity assumption**: a frontier marks every earlier date covered, which is correct only if
-the source publishes contiguously up to it. The NYC feeds do. A source with interior publication
-holes would mark a skipped date covered and report a true zero for a date it never published. If
-that ever occurs, coverage must move from a single frontier to an explicit per-date publication
-manifest. The assumption is recorded in the spec rather than left implicit in the SQL, because
-it is the one thing that would make coverage lie in the same way the old zero did.
+**Scope of the frontier method**: deriving a frontier from `max(event_date)` is a proxy. It is
+only valid for a source that satisfies both conditions below, and FR-004 is narrowed to sources
+that do rather than claiming a general mechanism:
+
+1. **Contiguous publication.** A frontier marks every earlier date covered, which holds only if
+   the source publishes contiguously up to it. A source with interior holes would mark a skipped
+   date covered and report a true zero for a date it never published.
+2. **Guaranteed daily events.** The frontier is the last date with a *qualifying event*, not the
+   last date *published*. Those coincide only when the source is dense enough that every
+   published day has at least one event citywide. Otherwise the most recent published day, if it
+   happened to have no events, reads as uncovered.
+
+The three sources qualify: 311 and crashes both occur daily citywide, and noise takes 311's
+frontier directly rather than its own (see below), so its zero-event days stay covered.
+
+Landed-interval metadata would establish publication independently of event rows and remove the
+proxy entirely. It is not available to dbt here: Airflow owns which intervals ran, and the
+DuckDB landing tables record only rows, not attempted intervals. Building a publication manifest
+table is the clean fix and is deferred as heavier than this demo warrants. Recording the two
+conditions as an explicit scope on FR-004 is the honest alternative, since it names what would
+have to be true for coverage to lie.
 
 **Rationale**: FR-004 originally called an absent source's count "zero" without distinguishing
 "published and empty" from "not published yet". Because crashes lag 311 by roughly a month,

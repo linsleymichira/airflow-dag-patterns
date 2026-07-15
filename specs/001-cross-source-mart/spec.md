@@ -151,7 +151,13 @@ published that date.
   the daily traffic crash count, the daily persons-injured and persons-killed totals from
   crashes, and the daily noise complaint count, each sourced from the corresponding landed
   dataset. Persons-injured and persons-killed are reported severity metrics in their own right.
-  Persons-killed is not required to feed a derived measure.
+  Persons-killed is not required to feed a derived measure. Each severity total MUST be
+  evaluated for completeness against its own field: the persons-injured total against
+  persons-injured, and the persons-killed total against persons-killed, independently of each
+  other. A total MUST be reported only when every contributing crash record for that date and
+  borough reports that field, and MUST be null otherwise. A partial total MUST NOT be presented
+  as the day's figure, because summing across unreported records understates the day while
+  looking like a fact.
 - **FR-003**: The model MUST expose both of these cross-source derived measures, each of which
   is only computable by combining two or more sources: 311 complaints per traffic crash (the
   flagship measure), and 311 complaints per person injured (the severity-normalized measure).
@@ -163,6 +169,12 @@ published that date.
     qualifying events. The count MUST be zero and the source MUST be marked covered.
   - **Not yet published**: the source has not published data for that date. The count MUST be
     null and the source MUST be marked uncovered.
+
+  Severity totals follow the same covered/uncovered rule, with the empty group defined
+  explicitly: a covered date and borough with **no** contributing crash records MUST report a
+  severity total of zero, because that zero is a fact about a published day. A covered date and
+  borough **with** crash records MUST report null whenever any of those records omits the field
+  (FR-002). An uncovered date MUST report null regardless.
 - **FR-005**: Before joining, each source's borough value MUST be normalized by trimming
   surrounding whitespace and upper-casing, yielding the canonical set (BROOKLYN, QUEENS, BRONX,
   MANHATTAN, STATEN ISLAND). Values that are missing, blank, or outside that set (for example
@@ -180,7 +192,11 @@ published that date.
   - **Covered, crashes but no injuries**: `persons_injured` is 0 with `crash_count` above 0 and
     the crash source marked covered. Crashes happened and injured nobody.
   - **Covered, severity unreported**: `persons_injured` is null while the crash source is marked
-    covered. The source did not report severity, which MUST NOT be represented as 0.
+    covered. At least one crash record that day did not report severity, which MUST NOT be
+    represented as 0 nor silently summed around.
+
+  A null numerator MUST also null the measure: when the 311 source is uncovered for a date, both
+  derived measures are null regardless of their denominators.
 - **FR-007**: Rebuilding the model against the same source snapshot MUST produce identical
   rows, with no duplicates and no drift, so reruns and backfills are safe. When newer source
   records have landed, the model MUST refresh exactly the date and borough keys those records
@@ -314,11 +330,17 @@ published that date.
   guarantee this (an ungeocoded crash can gain a borough later), so this is an accepted
   limitation of the ratified incremental design rather than a property of the data. A full
   rebuild would not have the failure mode. Recorded in the plan's Complexity Tracking.
-- Coverage (FR-004) is derived from each source's furthest-published event date, which assumes
-  each source publishes contiguously up to that date rather than leaving interior holes. The NYC
-  feeds behave this way. A source that skipped an interior date would be wrongly marked covered
-  for it, reading as a true zero. [Assumption] If a source ever publishes with interior gaps,
-  coverage must move to an explicit per-date publication manifest instead of a single frontier.
+- Coverage (FR-004) is derived from each source's furthest event date as a proxy for its
+  publication frontier, and is scoped to sources satisfying two conditions rather than claimed as
+  a general mechanism. [Assumption] Each contributing source (a) publishes contiguously up to
+  that date rather than leaving interior holes, and (b) is dense enough that every published day
+  carries at least one qualifying event citywide. The three sources qualify: 311 and traffic
+  crashes both occur daily citywide, and noise takes 311's frontier directly rather than deriving
+  its own, since noise is 311 filtered to noise complaint types. A source failing (a) would be
+  wrongly marked covered for a skipped date. A source failing (b) would read its most recent
+  published day as uncovered whenever that day had no events. Adding a source that fails
+  **either** condition requires an explicit per-date publication manifest instead of a frontier.
+  Both conditions must hold, so one failure is enough to make coverage wrong.
 - The extract layer requests each source's records by event date for the interval being run, so
   a record NYC publishes long after its event date is landed when that record's interval is run
   or re-run, not by a forward run on the current date. FR-007's guarantee therefore starts once
