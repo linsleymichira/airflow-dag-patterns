@@ -17,7 +17,7 @@ One row per `(activity_date, borough)`. Uniqueness is enforced by
 |`complaint_count`|BIGINT|yes|>= 0 when `c311_covered`. Null when uncovered|
 |`c311_covered`|BOOLEAN|no|Whether 311 has published `activity_date`|
 |`crash_count`|BIGINT|yes|>= 0 when `crashes_covered`. Null when uncovered|
-|`persons_injured`|BIGINT|yes|>= 0 when covered. Null when uncovered, or when every crash row that day omits the field (unreported, not zero)|
+|`persons_injured`|BIGINT|yes|>= 0 when covered. Null when uncovered, or when **any** crash row for that same date and borough omits the field (unreported, not zero). A total survives only when every crash row on its own key reports it, so an omission in one borough never nulls another|
 |`persons_killed`|BIGINT|yes|Same null semantics as `persons_injured`|
 |`crashes_covered`|BOOLEAN|no|Whether the crash source has published `activity_date`|
 |`noise_count`|BIGINT|yes|>= 0 when `noise_covered`. Null when uncovered|
@@ -73,6 +73,12 @@ recent day.
   crash_count = 0)` and `complaints_per_person_injured is null = (complaint_count is null or
   persons_injured is null or persons_injured = 0)`. The numerator arm matters: a null
   `complaint_count` (311 uncovered) nulls the ratio even where the denominator is fine.
+
+- Singular test `assert_severity_all_or_null.sql`, asserting that on every covered key the
+  mart's `persons_injured` and `persons_killed` match a severity total re-derived from
+  `stg_collisions` under the all-or-null rule (`case when count(<field>) = count(*) then
+  sum(<field>) end`), compared with `is distinct from` so a NULL mismatch is caught. It is the
+  only test that fails if the model regresses to a plain `sum()` across unreported rows.
 
 Counts are deliberately not `not_null`, because a null count is the meaningful uncovered signal
 rather than a defect.

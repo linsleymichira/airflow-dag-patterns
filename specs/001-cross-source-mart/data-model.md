@@ -96,13 +96,13 @@ has not, the count is `NULL` and the source's `*_covered` flag is false (Decisio
 |`complaint_count`|BIGINT|Daily 311 complaints. 0 when published-and-empty, NULL when uncovered|
 |`c311_covered`|BOOLEAN|Whether 311 has published `activity_date`|
 |`crash_count`|BIGINT|Daily crash records. 0 when published-and-empty, NULL when uncovered|
-|`persons_injured`|BIGINT|Daily crash persons injured. 0 when covered with no crashes, NULL when uncovered or when every crash row omits the field|
-|`persons_killed`|BIGINT|Daily crash persons killed. Same null semantics as `persons_injured`|
+|`persons_injured`|BIGINT|Daily crash persons injured. 0 when covered with no crashes, NULL when uncovered or when **any** crash row for that same date and borough omits the field. The total survives only when every row on its own key reports it, so an omission in one borough never nulls another|
+|`persons_killed`|BIGINT|Daily crash persons killed. Same null semantics as `persons_injured`, evaluated independently of it|
 |`crashes_covered`|BOOLEAN|Whether the crash source has published `activity_date`|
 |`noise_count`|BIGINT|Daily noise complaints. 0 when published-and-empty, NULL when uncovered|
 |`noise_covered`|BOOLEAN|Whether the noise source has published `activity_date`|
-|`complaints_per_crash`|DOUBLE|`complaint_count / nullif(crash_count, 0)`. Null when crash_count is 0 or uncovered|
-|`complaints_per_person_injured`|DOUBLE|`complaint_count / nullif(persons_injured, 0)`. Null when persons_injured is 0 or uncovered|
+|`complaints_per_crash`|DOUBLE|`complaint_count / nullif(crash_count, 0)`. Null when the numerator is null (311 uncovered), or crash_count is 0 or uncovered|
+|`complaints_per_person_injured`|DOUBLE|`complaint_count / nullif(persons_injured, 0)`. Null when the numerator is null (311 uncovered), or persons_injured is 0, uncovered, or unreported|
 
 Reading the pair together is what makes a null interpretable: `crash_count IS NULL AND NOT
 crashes_covered` means "not published yet", while `crash_count = 0 AND crashes_covered` means
@@ -231,8 +231,11 @@ where
               and prev.activity_date <= (select max(complaint_date) from {{ ref('stg_311_complaints') }}))
           or (not prev.crashes_covered
               and prev.activity_date <= (select max(crash_date) from {{ ref('stg_collisions') }}))
+          -- Noise reuses 311's frontier here too, matching the coverage CTE above. Deriving it
+          -- from stg_noise_complaints would contradict the CTE that sets the flag, and would
+          -- reintroduce the zero-noise-day-reads-unpublished bug on the reprocessing path.
           or (not prev.noise_covered
-              and prev.activity_date <= (select max(complaint_date) from {{ ref('stg_noise_complaints') }}))
+              and prev.activity_date <= (select max(complaint_date) from {{ ref('stg_311_complaints') }}))
      )
 {% endif %}
 ```

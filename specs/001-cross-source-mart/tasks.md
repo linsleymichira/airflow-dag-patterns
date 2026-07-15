@@ -33,8 +33,9 @@ factory plus dbt project, not a `src/`-style app: DAG code lives in `dags/`, con
 - All three landing tables already carry `_loaded_at`: `raw_311.complaints`
   (`dags/nyc_311_pipeline.py:217`) and the factory's `raw_<x>.records`
   (`dags/factories/source_factory.py:190`). Staging only needs to project it.
-- `dbt_utils` is already declared in `dbt_project/packages.yml`, but `dbt_project/macros/` does
-  not exist yet even though `dbt_project.yml` sets `macro-paths: ["macros"]`.
+- `dbt_utils` is already declared in `dbt_project/packages.yml`, but neither `dbt_project/macros/`
+  nor `dbt_project/tests/` exists yet, even though `dbt_project.yml` sets `macro-paths:
+  ["macros"]` and `test-paths: ["tests"]`.
 - `tests/dags/test_dag_imports.py::test_total_dag_count` derives its expectation as
   `2 + len(sources)`. Replacing taxi with collisions keeps the count at 4, so **no test edit is
   needed** (FR-011 requires only that it stays green).
@@ -50,7 +51,7 @@ factory plus dbt project, not a `src/`-style app: DAG code lives in `dags/`, con
 
 **Purpose**: Make the dbt project able to hold a macro and resolve `dbt_utils`.
 
-- [ ] T001 Create the `dbt_project/macros/` directory, which `dbt_project/dbt_project.yml` already points at via `macro-paths` but does not exist
+- [ ] T001 Create the `dbt_project/macros/` and `dbt_project/tests/` directories. `dbt_project/dbt_project.yml` already points at both (`macro-paths: ["macros"]`, `test-paths: ["tests"]`) but neither exists: the macro dir holds T005's `normalize_borough`, and the tests dir holds T039's singular severity test
 - [ ] T002 Install dbt packages so `dbt_utils` test macros resolve: run `dbt deps --profiles-dir . --project-dir .` from `dbt_project/`
 
 ---
@@ -64,7 +65,7 @@ and the three sources sharing a join key.
 **⚠️ CRITICAL**: No user story phase can start until this phase is complete.
 
 - [ ] T003 Replace the `nyc_taxi` entry with `nyc_collisions` in `include/sources.yaml` (`socrata_id: h9gi-nx95`, `primary_key: collision_id`, `freshness_field: crash_date`, `asset_uri: raw_collisions`, `schedule: "@daily"`), per [contracts/raw_collisions_source.md](./contracts/raw_collisions_source.md)
-- [ ] T004 Add `soft_fail=True` to the `PythonSensor` in `dags/factories/source_factory.py` so a source with nothing new SKIPS rather than fails, satisfying FR-008's requirement that a by-design lag is distinguishable from a genuine failure. Do NOT touch the sensor in `dags/nyc_311_pipeline.py`: its `NotImplementedError` is a deliberate teaching landmine
+- [ ] T004 Make `soft_fail` an **opt-in per-source** knob rather than a global sensor change, so only the lagging source skips on timeout (FR-008). In `dags/factories/source_factory.py` read `soft_fail = cfg.get("soft_fail", False)` and pass it to the `PythonSensor`, mirroring how `where_filter` is already read at line 70. In `include/sources.yaml` set `soft_fail: true` on `nyc_collisions` only (paired with T003), with a comment that crashes publish ~monthly so a timeout is the lag, not a fault. The default of `false` is what keeps the blast radius at zero: `nyc_311_complaints` and `nyc_noise_complaints` publish continuously, so for them a 6-hour timeout is a genuine publication stall that must still fail and page. A global `soft_fail=True` would silence exactly that alert on all three sources. Do NOT touch the sensor in `dags/nyc_311_pipeline.py`: its `NotImplementedError` is a deliberate teaching landmine
 - [ ] T005 [P] Create the `normalize_borough(column)` macro in `dbt_project/macros/normalize_borough.sql`, trimming and upper-casing to the canonical five and mapping everything else to the literal `Unknown` (FR-005, [data-model.md](./data-model.md))
 - [ ] T006 Update `dags/nyc_311_dbt.py`: replace `RAW_TAXI_ASSET` with `RAW_COLLISIONS_ASSET = Asset("raw_collisions")`, set `schedule=(RAW_311_ASSET | RAW_COLLISIONS_ASSET | RAW_NOISE_ASSET)` (OR semantics, FR-008), and add `Asset("mart_cross_source_daily")` to the task outlets
 - [ ] T007 [P] Update `dbt_project/models/staging/_sources.yml`: drop the `raw_taxi` source, add `raw_collisions` (schema `raw_collisions`, table `records`, `collision_id` tested not_null + unique)
@@ -94,7 +95,7 @@ daily aggregate.
 - [ ] T017 [US1] Materialize `mart_cross_source_daily` as a plain table for now via `{{ config(materialized='table') }}`, deferring the incremental filter to Phase 6 so US1 is testable on its own
 - [ ] T018 [US1] Add the `mart_cross_source_daily` entry to `dbt_project/models/marts/_schema.yml` with `not_null` on `activity_date` and `borough`, `dbt_utils.unique_combination_of_columns(['activity_date', 'borough'])`, and `accepted_values` on `borough` = the six canonical values (FR-005, contract)
 - [ ] T019 [US1] Run `dbt build --profiles-dir . --project-dir .` from `dbt_project/` and confirm the model builds and its tests pass
-- [ ] T020 [US1] Reconcile per [quickstart.md](./quickstart.md) SC-003: verify each per-source count equals that source's standalone daily aggregate across a sample of at least 10 keys spanning two or more boroughs, at least one `Unknown` key, at least one covered-overlap key, and at least one uncovered key (FR-009)
+- [ ] T020 [US1] Reconcile the Phase 3 table against its inputs (FR-009, and the strata of SC-003 that exist at this phase): for each source, verify its count equals that source's standalone daily aggregate across a sample of at least 10 keys **that source actually populated**, spanning two or more boroughs and including at least one `Unknown`-borough key, all drawn from the covered overlap region (`2026-05-01..2026-06-10`). Restricting to populated keys is load-bearing, not laziness: the model is still a plain table with no coverage gating until T026, so any key a source did not populate reads NULL here while its standalone aggregate reads 0, and an equality check over that key would fail on correct data. SC-003's empty-but-covered and uncovered strata are therefore verified at T042, once coverage semantics exist
 
 **Checkpoint**: US1 is independently deliverable. The table answers "how did 311 and crashes move
 together in this borough over this range?" with no manual join (SC-001).
@@ -151,9 +152,11 @@ depends on (FR-012).
 - [ ] T035 Verify late arrival per [quickstart.md](./quickstart.md): insert one new crash record into `raw_collisions.records` with a fresh `collision_id`, an old `crash_date`, and a `_loaded_at` strictly later than the captured watermark, then confirm `dbt build` re-touches that old key and its `crash_count` rises by exactly one (FR-007)
 - [ ] T036 Verify coverage transition per [quickstart.md](./quickstart.md): insert a crash record dated past the current frontier, rebuild, and confirm a previously-uncovered earlier key flips to `crash_count = 0` with `crashes_covered = true` rather than staying null
 - [ ] T037 [P] Update `README.md` to describe the cross-source model: the three contributing sources, the date-and-borough grain, both derived measures, the coverage flags and why a null count is not a zero, and the runnable command sequence (FR-012). SC-006 requires a first-time reader to find all of that in under 5 minutes without reading model code
-- [ ] T038 [P] Update `README.md` and `CLAUDE.md` where they still describe the taxi source or the two-load-schema split in terms of taxi, so no documentation claims a source that no longer exists (FR-011)
-- [ ] T039 Run the full gate: `dbt build --profiles-dir . --project-dir .` from `dbt_project/`, then `pytest tests/dags/ -v` from the repo root. Both must pass with no skipped tests
-- [ ] T040 Confirm the known limitations are still accurately described in [plan.md](./plan.md) Complexity Tracking after implementation: the mutable-grain gap (a revised record leaves a stale contribution on its prior key) and the frontier-versus-last-active-day edge. Correct the text if implementation changed either
+- [ ] T038 Update `README.md` and `CLAUDE.md` where they still describe the taxi source or the two-load-schema split in terms of taxi, so no documentation claims a source that no longer exists (FR-011). Not parallel with T037: both edit `README.md`
+- [ ] T039 Add the singular test `dbt_project/tests/assert_severity_all_or_null.sql` locking the FR-002 all-or-null severity rule, and list it in [contracts/mart_cross_source_daily.md](./contracts/mart_cross_source_daily.md). Re-derive the expected per-key severity from `stg_collisions` with `case when count(<field>) = count(*) then sum(<field>) end`, join to the mart on the covered keys, and fail on any row where the mart's `persons_injured` or `persons_killed` `is distinct from` the expected value (`is distinct from`, not `<>`, so a NULL mismatch is caught rather than swallowed). Without it, no test in the suite fails if the model regresses from the all-or-null aggregate to a plain `sum()`, which is the exact fabrication the live-API evidence in [data-model.md](./data-model.md) refuted. The test restates the model's `CASE`, so it is partly tautological and does not prove the rule correct: it pins the rule against silent regression, and the API evidence is what establishes the rule. **Must land before T040**, or the gate runs without it
+- [ ] T040 Run the full gate: `dbt build --profiles-dir . --project-dir .` from `dbt_project/`, then `pytest tests/dags/ -v` from the repo root. Both must pass with no skipped tests. Runs after T039 so `dbt build` actually executes the new severity test, and after T004 so the per-source `soft_fail` default is in force
+- [ ] T041 Confirm the known limitations are still accurately described in [plan.md](./plan.md) Complexity Tracking after implementation: the mutable-grain gap (a revised record leaves a stale contribution on its prior key) and the frontier-versus-last-active-day edge. Correct the text if implementation changed either
+- [ ] T042 Re-reconcile the **shipped** model against the full SC-003 sample, after T040 leaves the build green (FR-009, SC-003): at least 10 keys spanning two or more boroughs, including at least one `Unknown`-borough key, at least one key inside the covered overlap region, at least one empty-but-covered key, and at least one key with an uncovered source. **Coverage is a property of a source on a key, never of the key**, so partition the check per source, not per key. For each sampled key and each source independently: where `<source>_covered` is true, that source's mart count must equal its standalone daily aggregate, including 0 on an empty-but-covered day (the flip from the NULL T020 saw is exactly what T026 bought). Where `<source>_covered` is false, the count must be NULL and must **not** be compared against the standalone aggregate, because `count(*)` over an unpublished date returns 0 while the mart correctly returns NULL, so an equality check there fails on correct data. Mixed-coverage keys are the normal case here and must stay in the sample: every date in `2026-06-11..2026-07-10` has 311 covered and crashes uncovered, so the same key is checked by equality on `complaint_count` and by null-assertion on `crash_count`. T020 cannot stand in for this task: it ran against an ungated plain table, so it never exercised the coverage strata SC-003 mandates
 
 ---
 
@@ -165,7 +168,9 @@ Phase 1 (Setup)
           ├─> Phase 3 (US1, P1)  ← MVP
           │      └─> Phase 4 (US2, P2)   depends on US1's counts
           │      └─> Phase 5 (US3, P3)   depends on US1's spine
-          └─> Phase 6 (Polish)  ← needs US1 at minimum; T033 needs US3's flags
+          └─> Phase 6 (Polish)  ← needs US1 at minimum
+                 T033, T039, T042 need US3's coverage flags (T024 to T026)
+                 T039 (severity test) ──> T040 (gate) ──> T042 (reconcile)
 ```
 
 **Story dependencies**: US2 and US3 both build on US1's mart (they add columns to the same
@@ -173,7 +178,14 @@ file), so they are not parallel with US1. US2 and US3 are independent of each ot
 but both edit `mart_cross_source_daily.sql`, so run them sequentially to avoid conflicts.
 
 **Within Phase 6**: T033 (coverage-transition arm) requires US3's flags to exist. T037 and T038
-are documentation and can run any time after US3.
+are documentation and can run any time after US3, but they run in sequence with each other,
+because both edit `README.md`.
+
+The tail of Phase 6 is strictly ordered, and the order is the point. T039 (severity test) needs
+T026's coverage flags, since it asserts only over covered keys, and T001's `tests/` directory. It
+must land **before** T040, or the gate builds without ever executing it, which is the failure the
+test exists to prevent. T042 (re-reconciliation) runs last of all: it must observe the shipped,
+coverage-gated model on a green build, so it follows T040.
 
 ## Parallel Execution Opportunities
 
@@ -200,8 +212,8 @@ T011  dbt_project/models/staging/stg_noise_complaints.sql
 T003 (`include/sources.yaml`) and T006 (`dags/nyc_311_dbt.py`) are parallel with both waves.
 T012 needs T009 to exist, and T013 and T014 need the whole phase.
 
-**Phase 6**: T037 and T038 (documentation) are parallel with each other and with the
-verification tasks T034 to T036.
+**Phase 6**: the documentation tasks T037 and T038 are parallel with the verification tasks T034
+to T036, but **not with each other**, because both edit `README.md`. Run T037 then T038.
 
 **Not parallel**: every task touching `dbt_project/models/marts/mart_cross_source_daily.sql`
 (T015 to T017, T021, T024 to T026, T030 to T033) is the same file, in sequence.
@@ -217,6 +229,7 @@ demonstrable and independently valuable even if nothing else ships.
 **Increment 3 = Phase 5 (T024 to T029).** Adds the honesty layer, so the mart stops reporting
 "no crashes" on unpublished dates. Worth doing before any consumer sees the table.
 
-**Increment 4 = Phase 6 (T030 to T040).** Adds refresh semantics and the documentation SC-006
-needs. T031 to T033 are where the ratified complexity actually lands, so expect this phase to
+**Increment 4 = Phase 6 (T030 to T042).** Adds refresh semantics and the documentation SC-006
+needs, pins the all-or-null severity rule at T039, and closes SC-003 against the shipped model at
+T042. T031 to T033 are where the ratified complexity actually lands, so expect this phase to
 carry the most review weight.

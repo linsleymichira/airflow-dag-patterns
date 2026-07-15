@@ -54,7 +54,7 @@ validation path.
 |Principle|How this feature complies|
 |---|---|
 |I. Idempotent, interval-bounded tasks|Collisions extract is bounded by `crash_date` in `[data_interval_start, data_interval_end)` and loads via `INSERT OR REPLACE` on `collision_id`. `crash_date` is a stable event date, so a backfill re-pull upserts revised records idempotently. Because extraction is bounded by `crash_date`, a record NYC publishes long after its event date is landed by running or re-running that record's interval, not by a forward run: the backfill run strategy (Decision 8) is what lands the lagging crash history, and FR-007's guarantee starts once a record is landed. The mart is incremental `delete+insert` keyed on `[activity_date, borough]`, reprocessing keys touched by source rows new since each source's own watermark plus keys whose coverage advanced (Decision 7), so a rebuild against an unchanged snapshot is value-identical.|
-|II. Freshness-aware, slot-respecting scheduling|The collisions pipeline inherits the factory's reschedule-mode `PythonSensor`. On bleeding-edge dates the sensor correctly waits (then times out) until NYC publishes the next monthly crash batch. The demo runs via backfill over the published overlap window.|
+|II. Freshness-aware, slot-respecting scheduling|The collisions pipeline inherits the factory's reschedule-mode `PythonSensor`. On bleeding-edge dates the sensor correctly waits until NYC publishes the next monthly crash batch, then times out and **skips**, because `nyc_collisions` opts into `soft_fail` in `include/sources.yaml` (FR-008 requires a by-design lag be distinguishable from a genuine failure). The opt-in is per source: 311 and noise keep the default `soft_fail=False`, so a timeout there still fails and alerts. The demo runs via backfill over the published overlap window.|
 |III. Data-aware scheduling via Assets|The collisions pipeline emits `Asset("raw_collisions")`. `nyc_311_dbt` subscribes with `schedule=(RAW_311 \| RAW_COLLISIONS \| RAW_NOISE)` (OR semantics) and adds `Asset("mart_cross_source_daily")` as an outlet.|
 |IV. Structured failure alerting on every task|The collisions pipeline inherits `on_failure_callback=alert_callback` from the factory `default_args`. No new task bypasses it.|
 |V. TaskFlow API + Airflow 3 conventions|No new hand-written DAG. The source is added via the factory (TaskFlow already). No imports outside the Airflow 3 surface.|
@@ -66,6 +66,29 @@ the expected count dynamically as `2 + len(sources)`, so replacing the taxi sour
 collisions keeps the count at 4 and needs **no** test edit. The conflict was surfaced by
 `checklists/mart.md` CHK020 and the spec text has since been corrected in place, so the plan and
 the spec now agree. FR-011 carries the real obligation: the count test must stay green.
+
+**Shared-sensor blast radius (raised and closed 2026-07-15)**: FR-008 is satisfied through
+`soft_fail` on the factory's `PythonSensor`, which is **shared by every factory-generated
+pipeline**. Applying it globally would have silently widened the change to the pre-existing
+`nyc_noise_complaints` and `nyc_311_complaints` pipelines, so `soft_fail` is instead an opt-in
+per-source knob (`cfg.get("soft_fail", False)`), set only on `nyc_collisions` (T004).
+
+The distinction is load-bearing, and rests on what `soft_fail` actually does. Verified against
+the installed Task SDK (`airflow/sdk/bases/sensor.py`): it converts a **timeout** into
+`AirflowSkipException`, while a generic exception from `poke()` (auth or network failure) still
+reaches `except Exception: raise e` and fails and pages. Auth errors were never the exposure. A
+genuinely stalled source is: the API stays up and returns stale data, `poke()` returns False with
+no exception, and the sensor times out. For collisions that timeout is the ~monthly publication
+lag and should skip. For 311 and noise, which publish continuously, a 6-hour timeout is an
+incident, and a global flag would have converted that alert into a silent skip. Per-source keeps
+it.
+
+The knob is also on-thesis rather than a concession. `include/sources.yaml` already carries
+`where_filter` as an optional single-consumer knob read the same way, so declaring a source's
+publication cadence in config is the repo's existing Principle VI pattern, not a new mechanism.
+Principle IV holds throughout: `on_failure_callback=alert_callback` stays wired on every source,
+and the only behavior that changes is that a timeout on the one source declared as lagging no
+longer pages.
 
 **Result**: PASS. No complexity deviations to justify.
 
@@ -93,14 +116,18 @@ specs/001-cross-source-mart/
 README.md                                # FR-012: describe the cross-source model
 
 include/
-└── sources.yaml                         # REPLACE nyc_taxi entry with nyc_collisions
+└── sources.yaml                         # REPLACE nyc_taxi with nyc_collisions; soft_fail: true
 
 dags/
-└── nyc_311_dbt.py                        # RAW_TAXI_ASSET -> RAW_COLLISIONS_ASSET; add mart outlet
+├── nyc_311_dbt.py                        # RAW_TAXI_ASSET -> RAW_COLLISIONS_ASSET; add mart outlet
+└── factories/
+    └── source_factory.py                 # read per-source soft_fail, pass to PythonSensor (FR-008)
 
 dbt_project/
 ├── macros/
 │   └── normalize_borough.sql            # NEW: canonical borough normalization
+├── tests/
+│   └── assert_severity_all_or_null.sql  # NEW: pins the FR-002 all-or-null severity rule
 └── models/
     ├── staging/
     │   ├── _sources.yml                  # drop raw_taxi, add raw_collisions
