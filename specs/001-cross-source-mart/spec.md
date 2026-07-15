@@ -170,8 +170,17 @@ published that date.
   `Unknown`, never silently discarded. The `Unknown` bucket is a full member of the borough
   dimension: its rows carry the same metrics and derived measures as any canonical borough.
 - **FR-006**: A derived measure MUST resolve to null rather than an error, and MUST NOT cause
-  the row to be dropped, when its denominator is zero, missing, or uncovered. The accompanying
-  coverage indicators are what let a consumer tell those cases apart.
+  the row to be dropped, when its denominator is zero, missing, or uncovered. A null measure MUST
+  be disambiguated by reading the row's other reported columns, which MUST make these cases
+  distinguishable for `311 complaints per person injured`:
+  - **Uncovered**: `persons_injured` is null and the crash source is marked uncovered. The
+    denominator is unknown because the date is unpublished.
+  - **Covered, no crashes**: `persons_injured` is 0, `crash_count` is 0, and the crash source is
+    marked covered. Nobody was injured because nothing happened.
+  - **Covered, crashes but no injuries**: `persons_injured` is 0 with `crash_count` above 0 and
+    the crash source marked covered. Crashes happened and injured nobody.
+  - **Covered, severity unreported**: `persons_injured` is null while the crash source is marked
+    covered. The source did not report severity, which MUST NOT be represented as 0.
 - **FR-007**: Rebuilding the model against the same source snapshot MUST produce identical
   rows, with no duplicates and no drift, so reruns and backfills are safe. When newer source
   records have landed, the model MUST refresh exactly the date and borough keys those records
@@ -186,7 +195,17 @@ published that date.
 - **FR-008**: The model MUST refresh after new data lands for any one of its contributing
   sources, without waiting for all sources to be fresh. A refresh triggered by one source MUST
   NOT wait for, fail on, or discard rows because another source is behind. A source that has
-  published nothing new is not an error condition for the model.
+  published nothing new is not an error condition for the model. The observable behavior when a
+  source's freshness check finds nothing new MUST be:
+  - That source's own pipeline run waits and then stops without landing data. It MUST NOT land a
+    partial or empty result that would move the source's coverage frontier forward.
+  - The model still builds on any other source's arrival, and the stalled source's dates simply
+    remain uncovered (FR-004). Processing continues, the source is not skipped in a way that
+    changes its already-built rows.
+  - The stall MUST be distinguishable from a genuine failure in whatever failure reporting the
+    pipelines already use, so a source that is merely behind does not read as broken. A source
+    that lags by design (traffic crashes lag roughly one month) would otherwise emit a failure
+    signal on every forward run, training the reader to ignore it.
 - **FR-009**: Each per-source metric in the model MUST equal that source's standalone daily
   aggregate for the same date and borough, so the combined view reconciles to its inputs.
   Reconciliation is verified by sampling keys (see SC-003), not by an exhaustive automated
@@ -226,8 +245,12 @@ published that date.
   in a given borough over a given date range?" from a single table with no manual joins.
 - **SC-002**: The model includes 100% of the date and borough combinations for which any
   source reported activity, with zero dropped keys.
-- **SC-003**: For 100% of sampled date and borough keys, each per-source metric equals the
-  source's standalone daily aggregate (reconciliation passes).
+- **SC-003**: Reconciliation passes for 100% of a defined sample: at least 10 date-and-borough
+  keys, drawn to include at least two distinct boroughs, at least one `Unknown`-borough key, at
+  least one key inside the fully-covered overlap region, and at least one key where a source is
+  uncovered. For each sampled key, every per-source metric equals that source's standalone daily
+  aggregate. The sample is specified so the criterion is falsifiable: "100% of sampled keys" with
+  an undefined sample would pass on a sample of one.
 - **SC-004**: Rebuilding any previously built date range against an unchanged source snapshot
   leaves every existing row value-identical across its reported columns (the date, borough,
   per-source metrics, coverage flags, and derived measures). "Changes zero rows" is measured by
@@ -268,13 +291,29 @@ published that date.
   other.
 - Historical coverage begins from the same start date as the existing pipelines. A separate
   backfill of older history is out of scope. For the feature to be demonstrable, the built model
-  must cover a date range where 311 and traffic crashes both have published data, since that
-  overlap is where the cross-source measures are non-null. The crash publication lag (roughly
-  one month) bounds the recent edge of that range.
+  must contain two concrete regions, since one alone cannot show both the cross-source measures
+  and the coverage semantics:
+  - **A fully-covered overlap region of at least 30 consecutive days**, where 311 and traffic
+    crashes have both published, so `complaints_per_crash` and `complaints_per_person_injured`
+    are non-null. It must contain at least one row for each of the five canonical boroughs.
+  - **An uncovered region of at least 7 consecutive days** past the crash publication frontier,
+    where 311 has published and crashes have not, so `crash_count` is null with
+    `crashes_covered` false.
+  The crash publication lag (roughly one month) is what makes the second region available, and
+  bounds the recent edge of the first. Concrete dates for the current data are in
+  [quickstart.md](./quickstart.md), which the lag will move over time. The durations above are
+  the requirement, the dates are the fixture.
 - Retiring the taxi source removes a pre-existing defect as a side effect: the taxi entry in the
   factory config names a freshness field and a primary key that do not exist on the taxi
   dataset. Fixing that defect is in scope for this feature only in the sense that the entry
   ceases to exist. No effort is spent making the taxi pipeline work first.
+- FR-007's refresh reaches keys reachable from current source records. A source record whose own
+  date or borough is later revised moves to a new key, and its contribution to the prior key is
+  not recomputed, because the landing table overwrites the record in place and the prior key
+  becomes unreachable. [Assumption] Source records are treated as grain-stable. NYC does not
+  guarantee this (an ungeocoded crash can gain a borough later), so this is an accepted
+  limitation of the ratified incremental design rather than a property of the data. A full
+  rebuild would not have the failure mode. Recorded in the plan's Complexity Tracking.
 - Coverage (FR-004) is derived from each source's furthest-published event date, which assumes
   each source publishes contiguously up to that date rather than leaving interior holes. The NYC
   feeds behave this way. A source that skipped an interior date would be wrongly marked covered

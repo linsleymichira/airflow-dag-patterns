@@ -17,8 +17,8 @@ One row per `(activity_date, borough)`. Uniqueness is enforced by
 |`complaint_count`|BIGINT|yes|>= 0 when `c311_covered`. Null when uncovered|
 |`c311_covered`|BOOLEAN|no|Whether 311 has published `activity_date`|
 |`crash_count`|BIGINT|yes|>= 0 when `crashes_covered`. Null when uncovered|
-|`persons_injured`|BIGINT|yes|>= 0 when `crashes_covered`. Null when uncovered|
-|`persons_killed`|BIGINT|yes|>= 0 when `crashes_covered`. Null when uncovered|
+|`persons_injured`|BIGINT|yes|>= 0 when covered. Null when uncovered, or when every crash row that day omits the field (unreported, not zero)|
+|`persons_killed`|BIGINT|yes|Same null semantics as `persons_injured`|
 |`crashes_covered`|BOOLEAN|no|Whether the crash source has published `activity_date`|
 |`noise_count`|BIGINT|yes|>= 0 when `noise_covered`. Null when uncovered|
 |`noise_covered`|BOOLEAN|no|Whether the noise source has published `activity_date`|
@@ -64,8 +64,13 @@ recent day.
 - `dbt_utils.expression_is_true` per source, asserting the count is null if and only if the
   source is uncovered (for example `(crash_count is null) = (not crashes_covered)`).
 - `dbt_utils.expression_is_true` per covered measure, asserting non-negativity wherever the
-  coverage flag is true (for example `not crashes_covered or (crash_count >= 0 and
-  persons_injured >= 0 and persons_killed >= 0)`). Uncovered values stay nullable.
+  coverage flag is true and the value is present (for example `not crashes_covered or
+  (crash_count >= 0 and coalesce(persons_injured, 0) >= 0 and coalesce(persons_killed, 0) >=
+  0)`). Uncovered values stay nullable, and severity stays nullable even when covered.
+- `dbt_utils.expression_is_true` per derived measure, asserting it is null exactly when its
+  denominator is unusable and a real ratio otherwise:
+  `complaints_per_crash is null = (crash_count is null or crash_count = 0)` and
+  `complaints_per_person_injured is null = (persons_injured is null or persons_injured = 0)`.
 
 Counts are deliberately not `not_null`, because a null count is the meaningful uncovered signal
 rather than a defect.

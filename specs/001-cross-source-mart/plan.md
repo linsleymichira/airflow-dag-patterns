@@ -148,14 +148,24 @@ diverge on purpose: the single-source mart has no lagging input and keeps a simp
 `>= max(activity_date)` filter, while this one carries the full apparatus. Two strategies, each
 matched to its inputs, is the teaching artifact.
 
-**Known edge in the coverage model** (implementation watch-item): coverage is derived from
+**Known edge in the coverage model** (mostly fixed 2026-07-14): coverage is derived from
 `max(event_date)` over each source's landed rows, which equates "the source's last day with any
 activity" to "the source's publication frontier". Those differ when the frontier day itself had
-no qualifying events. It bites hardest for noise, whose frontier is really 311's (noise is
-filtered 311), so a citywide zero-noise day would read as uncovered rather than as a true zero:
-the exact conflation the coverage layer exists to prevent. Real NYC data never hits this (noise
-and crashes both occur daily citywide), so it is documented rather than designed around. A
-publication manifest keyed on which intervals actually ran would remove the edge.
+no qualifying events. Noise was the real exposure, since noise is filtered 311, so a citywide
+zero-noise day would have read as uncovered rather than as a true zero: the exact conflation the
+coverage layer exists to prevent. Noise now derives its frontier from 311's, which is its actual
+publication contract. Crashes and 311 both occur daily citywide, so their frontiers coincide with
+their last active day. A publication manifest keyed on which intervals actually ran would remove
+the residual edge, and is deferred as heavier than the demo needs.
+
+**Known limitation, mutable grain** (accepted): the incremental filter reaches keys reachable
+from current source records. If NYC revises a record so its event date or borough changes (an
+ungeocoded crash gaining a borough, moving out of `Unknown`), the landing table's
+`INSERT OR REPLACE` overwrites it in place, the prior key becomes unreachable, and its stale
+contribution is never recomputed. The old key keeps a count that is too high. The gap is the
+sharpest cost of the ratified incremental design: a full refresh would not have the failure
+mode. Fixing it properly needs prior-key capture via a snapshot, which exceeds what this demo
+warrants. Recorded as an assumption in the spec.
 
 The one non-obvious operational constraint (not a violation) is the crash-data lag: the demo
 depends on a backfill over the source overlap region rather than a forward `@daily` tick. It is

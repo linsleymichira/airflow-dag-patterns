@@ -113,17 +113,17 @@ design no longer outruns the requirements. Nothing was waved through.
 |Items|Resolution|
 |---|---|
 |CHK001, CHK002, CHK008|FR-005 now names the literal `Unknown`, mandates upper-casing, and states that `Unknown` is a full dimension member carrying the same measures|
-|CHK003, CHK016|New FR-004 coverage semantics. A count is 0 only for published-and-empty, null for uncovered. ADR `2026-07-14-cross-source-mart-coverage-flags`|
+|CHK003, CHK016|New FR-004 coverage semantics. A count is 0 only for published-and-empty, null for uncovered. FR-006 additionally enumerates the four distinguishable cases behind a null `311 complaints per person injured` (uncovered, covered-no-crashes, covered-crashes-no-injuries, covered-severity-unreported) and which columns tell them apart. ADR `2026-07-14-cross-source-mart-coverage-flags`|
 |CHK004|FR-002 states persons-killed is a reported metric, not a denominator. Assumptions explain why (daily borough fatalities are usually 0, so a ratio would be null on most rows)|
 |CHK005|FR-003 changed from "at least one" to mandating both named measures|
 |CHK006|Edge case now names `unique_key`, verified against `nyc_311_pipeline.py` and `sources.yaml`|
-|CHK007|FR-009 now states reconciliation is verified by sampling (matching SC-003's existing wording), not by an exhaustive automated test|
+|CHK007|FR-009 states reconciliation is verified by sampling, not by an exhaustive automated test, and SC-003 now defines the sample that makes it falsifiable: at least 10 keys spanning two or more boroughs, an `Unknown` key, a covered-overlap key, and an uncovered key. The contract, FR-009, and SC-003 all describe the same sampled guarantee|
 |CHK009|FR-001 reworded from "converted to" to "is the ET civil day of", noting floating-local sources need no conversion step|
 |CHK010|New FR-010 makes 311/noise non-additivity a consumer-facing requirement|
 |CHK011, CHK012, CHK015, CHK018|FR-007 now bounds reprocessing by which source records are new, and explicitly forbids an event-date recency window. ADR `2026-07-14-cross-source-mart-incremental-strategy`|
 |CHK013|SC-004 now defines "changes zero rows" as value-identity, not physical no-op|
-|CHK014|FR-008 states a lagging source is not an error condition and must not block other sources|
-|CHK017|Assumptions now require the built model to cover a 311-and-crash overlap range|
+|CHK014|FR-008 states a lagging source is not an error condition and must not block other sources, and now specifies the observable behavior when a freshness check finds nothing new: the stalled pipeline lands nothing (so its coverage frontier does not move), the model still builds on any other source's arrival with the stalled source's dates simply uncovered, and the stall must be distinguishable from a genuine failure so a by-design lag does not signal broken on every run|
+|CHK017|Assumptions now require two concrete regions rather than a vague "overlap range": a fully-covered overlap of at least 30 consecutive days containing at least one row per canonical borough, and an uncovered region of at least 7 consecutive days past the crash frontier. Durations are the requirement, the quickstart's dates are the fixture (the lag moves them over time)|
 |CHK019, CHK021|New FR-011 governs taxi removal and what must not break|
 |CHK020|Spec Clarifications corrected in place. The plan's reconciliation note updated to match|
 |CHK022|Assumptions now scope the pre-existing taxi config defect explicitly|
@@ -162,3 +162,33 @@ on empty-source coverage, and non-negativity plus `_loaded_at` not_null tests.
 One finding was declined: a `not_null` test on the watermark column. It assumed a single shared
 watermark. With per-source watermarks, a key reported by only one source legitimately has null
 watermarks for the others, so the test would fail on correct data.
+
+### Second review round (2026-07-14)
+
+A further review pass produced eight findings. All were verified against the artifacts before
+acting, and one was settled with live data rather than judgment.
+
+**An assumption was refuted, not confirmed.** The design had summed severity as
+`sum(coalesce(persons_injured, 0))`, with a documented assumption that `h9gi-nx95` omits the
+field only when the true value is zero. Checking the live API disproved it: 18 of 2,269,187 rows
+omit `number_of_persons_injured` and 8,913 omit `number_of_persons_killed`, and a sampled
+omitting row (`collision_id` 4387369) carries `number_of_cyclist_injured: 1`, so a person was
+injured while the field is simply absent. The coalesce would have fabricated an injury-free day
+out of missing data, which is the same class of lie the coverage flags exist to prevent. Null now
+means unreported and propagates to a null derived measure.
+
+**The noise coverage flaw is fixed, not just documented.** Noise now derives its publication
+frontier from 311's (noise is 311 filtered to noise complaint types, so 311's frontier is its
+actual contract), instead of from `max(noise complaint_date)`, which would have read a citywide
+zero-noise day as unpublished.
+
+**A new limitation was accepted and recorded**: the incremental filter reaches only keys
+reachable from current source records, so a record whose date or borough is revised leaves a
+stale contribution on its prior key. Prior-key capture needs a snapshot, which exceeds the demo's
+warrant. It is the sharpest cost of the ratified incremental design and is now named in the
+spec's Assumptions and the plan's Complexity Tracking rather than left latent.
+
+Also applied: FR-006 enumerates the four cases behind a null severity measure, SC-003 defines a
+falsifiable sample, FR-008 specifies the observable stalled-source behavior, the CHK017
+assumption states concrete region durations, and both derived measures gained
+`expression_is_true` null-semantics tests.
