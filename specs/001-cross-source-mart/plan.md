@@ -121,9 +121,36 @@ and retires the pre-existing broken taxi config as a side effect.
 
 ## Complexity Tracking
 
-No constitution violations, so no entries required.
+No constitution violations. However, the 2026-07-14 amendments materially increased this
+feature's complexity, and the honest accounting is below rather than a bare "no entries
+required". Every item traces to a requirement, but the aggregate is worth ratifying before
+implementation.
+
+|Added complexity|Why it exists|Simpler alternative rejected|
+|---|---|---|
+|Per-source coverage flags (3 columns) and null-vs-zero counts|FR-004. Crashes lag 311 by a month, so a plain zero would report "no crashes" on every recent date|Accept the zeros and document the lag. Rejected: the mart lies on its freshest rows|
+|Two-armed incremental filter (per-source watermarks plus coverage transitions)|FR-007. A calendar window never reaches month-old crash dates, a shared watermark skips independently-landing batches, and a coverage flip touches no source row|Full refresh (table). Rejected as sidestepping rather than modeling the problem|
+|Three internal watermark columns|Required by the per-source arm above|One shared watermark. Rejected: silently skips crash batches|
+|Contiguous-publication assumption|Coverage is derived from each source's furthest-published event date|A per-date publication manifest. Deferred as heavier than a demo needs|
+
+**Constitution tension worth naming (Principle VI, Simplicity First)**: `mart_cross_source_daily`
+is now the most elaborate model in the repo, well past the hand-written `mart_complaints_daily`
+reference it was meant to mirror. That is defensible, since the complexity is a faithful response
+to a genuinely lagging real-world source and is exactly the judgment a portfolio repo should
+demonstrate. It is not free. If the goal is the simplest artifact that teaches multi-source
+orchestration, the full-refresh option (research.md Decision 7, rejected) removes the incremental
+filter and the watermark columns outright, keeping only the coverage flags.
+
+**Known edge in the coverage model** (implementation watch-item): coverage is derived from
+`max(event_date)` over each source's landed rows, which equates "the source's last day with any
+activity" to "the source's publication frontier". Those differ when the frontier day itself had
+no qualifying events. It bites hardest for noise, whose frontier is really 311's (noise is
+filtered 311), so a citywide zero-noise day would read as uncovered rather than as a true zero:
+the exact conflation the coverage layer exists to prevent. Real NYC data never hits this (noise
+and crashes both occur daily citywide), so it is documented rather than designed around. A
+publication manifest keyed on which intervals actually ran would remove the edge.
 
 The one non-obvious operational constraint (not a violation) is the crash-data lag: the demo
-depends on a backfill over the overlap window rather than a forward `@daily` tick. It is
+depends on a backfill over the source overlap region rather than a forward `@daily` tick. It is
 documented in [quickstart.md](./quickstart.md) and is the freshness sensor (Principle II)
 behaving correctly, not a workaround.
