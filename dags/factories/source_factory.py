@@ -41,7 +41,7 @@ MAX_PAGES = 50
 
 
 def _socrata_headers() -> dict[str, str]:
-    token = Variable.get("socrata_app_token", default_var="")
+    token = Variable.get("socrata_app_token", default="")
     return {"X-App-Token": token} if token else {}
 
 

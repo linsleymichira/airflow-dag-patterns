@@ -41,31 +41,17 @@ MAX_PAGES = 50  # hard cap to avoid runaway pulls; tune for production
 
 
 def _socrata_headers() -> dict[str, str]:
-    token = Variable.get("socrata_app_token", default_var="")
+    token = Variable.get("socrata_app_token", default="")
     return {"X-App-Token": token} if token else {}
 
 
 def _check_freshness(data_interval_start: pendulum.DateTime, **_: Any) -> bool:
     """Poll Socrata's :updated_at and decide whether upstream is fresh enough to proceed.
 
-    TODO(human): implement the freshness decision. This is the single most important
-    design decision in the repo (see README §"Design decisions to defend" #2).
+    Implements the rule from README §"Design decisions to defend" #2: proceed only when the
+    dataset has moved past this interval's start AND the interval actually has rows.
 
-    What you have:
-      - `data_interval_start`: the lower bound of this DAG run's interval (pendulum.DateTime)
-      - `max_updated_at`: the most recent :updated_at value Socrata reports for the dataset
-        (a pendulum.DateTime, parsed from `max(:updated_at)`)
-      - `row_count`: how many rows have :updated_at >= data_interval_start
-
-    What to return:
-      - True  → sensor succeeds, downstream extract+load runs
-      - False → sensor reschedules itself and polls again later
-
-    Trade-offs to weigh (briefly, in a comment above your return):
-      - Too lax (always True): emits empty Asset events that wake the dbt DAG for nothing
-      - Too strict (require N new rows): misses legitimate slow days
-      - NYC 311 has known slow weekend cadences; a row_count threshold may need to be
-        environment-configurable, not hardcoded
+    Returns True to let the extract run, False to reschedule and poll again later.
     """
     response = requests.get(
         SOCRATA_BASE,
@@ -96,11 +82,17 @@ def _check_freshness(data_interval_start: pendulum.DateTime, **_: Any) -> bool:
         row_count,
     )
 
-    # TODO(human): replace the line below with your freshness decision.
-    # Keep it to one expression; comment the trade-off you chose.
-    raise NotImplementedError(
-        "Implement the freshness decision in dags/nyc_311_pipeline.py::_check_freshness"
-    )
+    # Both conditions, because each alone fails a real case. max_updated_at alone fires on any
+    # dataset touch, waking the dbt DAG for an extract that lands nothing. row_count alone would
+    # pass a stale interval whose rows were all counted on an earlier poll. Together they mean
+    # "upstream moved, and it moved into this interval".
+    #
+    # The threshold is a Variable rather than a literal 0 because NYC 311's weekend cadence makes
+    # the right floor environment-specific: 1 is honest for a demo (any new row is real activity),
+    # while a production deployment may raise it to damp near-empty runs. Hardcoding it is the
+    # "too strict" failure in the docstring, and it misses legitimate slow days.
+    min_new_rows = int(Variable.get("nyc_311_min_new_rows", default=1))
+    return max_updated_at > data_interval_start and row_count >= min_new_rows
 
 
 @dag(
